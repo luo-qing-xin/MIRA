@@ -1,0 +1,129 @@
+import Foundation
+
+struct Plan: Codable, Identifiable {
+    var id = UUID().uuidString
+    var title: String
+    var notes: String
+    var hour: Int
+    var minute: Int
+    var weekdays: [Int] // Calendar: Sunday = 1; empty = daily
+    var link: String
+    var enabled = true
+    var created = Date()
+}
+struct Entry: Codable, Identifiable {
+    var id: String
+    var title: String
+    var body: String
+    var source: String
+    var status: String
+    var link: String
+    var date: Date
+    var expires: Date?
+    var done = false
+    var notified = false
+    var snooze: Date?
+    var thread: String?
+    // Control entry: close this other entry id and never display this one.
+    var dismiss: String? = nil
+
+    var canSnooze: Bool {
+        status == "待确认" || status == "待补充信息" || status == "待完成"
+    }
+}
+extension HubData {
+    /// Close one entry by id. Used by silent dismissal events.
+    mutating func close(_ id: String) -> Bool {
+        guard let index = entries.firstIndex(where: { $0.id == id }) else { return false }
+        entries[index].done = true
+        entries[index].snooze = nil
+        return true
+    }
+}
+struct HubData: Codable {
+    var plans: [Plan] = []
+    var entries: [Entry] = []
+    var seen: Set<String> = []
+    var lastEvent: Date?
+}
+enum Schedule {
+    static func due(_ plan: Plan, now: Date, calendar: Calendar = .current) -> Entry? {
+        guard plan.enabled, plan.weekdays.isEmpty || plan.weekdays.contains(calendar.component(.weekday, from: now)) else { return nil }
+        let start = calendar.startOfDay(for: now)
+        guard let time = calendar.date(bySettingHour: plan.hour, minute: plan.minute, second: 0, of: start), time <= now,
+              let end = calendar.date(byAdding: .day, value: 1, to: start) else { return nil }
+        let parts = calendar.dateComponents([.year, .month, .day], from: now)
+        let key = "plan-\(plan.id)-\(parts.year!)-\(parts.month!)-\(parts.day!)"
+        return Entry(id: key, title: plan.title, body: plan.notes, source: "个人计划", status: "待完成", link: plan.link, date: time, expires: end)
+    }
+    static func active(_ e: Entry, now: Date) -> Bool { !e.done && (e.expires == nil || e.expires! > now) }
+}
+enum Links {
+    static func valid(_ value: String) -> Bool {
+        if value.isEmpty { return true }
+        guard let u = URL(string: value) else { return false }
+        if u.scheme == "https" { return u.host == "chatgpt.com" || u.host == "chat.openai.com" }
+        if u.scheme == "dsh" { return u.host == "open" && (u.path.isEmpty || u.path == "/") }
+        return u.scheme == "codex" && u.host == "threads" && u.path.count > 1
+    }
+}
+
+enum DSHLink {
+    static let patchBlock = """
+    # MIRA bridge (added by MIRA)
+    - insert:
+        - id: mira-bridge
+          name: './plugins/mira-bridge/index.js'
+
+    """
+    static let marker = "id: mira-bridge"
+
+    static func profile(_ environment: [String: String], home: URL) -> URL {
+        let root = environment["DSH_HOME"].map { URL(fileURLWithPath: $0) } ?? home.appendingPathComponent(".dsh")
+        return root.appendingPathComponent("profiles/desktop")
+    }
+
+    static func installed(patch: String) -> Bool { patch.contains(marker) }
+
+    /// Copy the bridge into the profile and add its row. Never touches other rows.
+    static func install(profile: URL, files: [String: Data], now: Date = Date()) throws {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: profile.appendingPathComponent("package.json").path) else {
+            throw NSError(domain: "请先启动一次 DeepSeek Harness，再配置连接。", code: 1)
+        }
+        let destination = profile.appendingPathComponent("plugins/mira-bridge")
+        try fm.createDirectory(at: destination, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        for (name, data) in files {
+            let target = destination.appendingPathComponent(name)
+            try data.write(to: target, options: .atomic)
+            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
+        }
+        let patch = profile.appendingPathComponent("cordis.patch.yml")
+        var text = (try? String(contentsOf: patch, encoding: .utf8)) ?? ""
+        guard !installed(patch: text) else { return }
+        if !text.isEmpty {
+            try? text.write(to: backup(patch, now: now), atomically: true, encoding: .utf8)
+        }
+        if !text.hasSuffix("\n") { text += "\n" }
+        text += patchBlock
+        try text.write(to: patch, atomically: true, encoding: .utf8)
+    }
+
+    static func remove(profile: URL, now: Date = Date()) throws {
+        let fm = FileManager.default
+        let patch = profile.appendingPathComponent("cordis.patch.yml")
+        if let text = try? String(contentsOf: patch, encoding: .utf8), installed(patch: text) {
+            try? text.write(to: backup(patch, now: now), atomically: true, encoding: .utf8)
+            let cleaned = text.replacingOccurrences(of: "\n" + patchBlock, with: "")
+                .replacingOccurrences(of: patchBlock, with: "")
+            try cleaned.write(to: patch, atomically: true, encoding: .utf8)
+        }
+        let destination = profile.appendingPathComponent("plugins/mira-bridge")
+        if fm.fileExists(atPath: destination.path) { try fm.removeItem(at: destination) }
+    }
+
+    static func backup(_ patch: URL, now: Date) -> URL {
+        patch.deletingLastPathComponent()
+            .appendingPathComponent(patch.lastPathComponent + ".mira-backup-\(Int(now.timeIntervalSince1970))")
+    }
+}

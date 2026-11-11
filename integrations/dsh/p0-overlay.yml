@@ -1,0 +1,6 @@
+# P0 test overlay: mount the MIRA bridge into a throwaway boot.
+- insert:
+    - id: mira-bridge
+      name: "file:///Users/yunye/MIRA/integrations/dsh/index.js"
+      config:
+        dataDir: "/tmp/mira-p0-inbox"
