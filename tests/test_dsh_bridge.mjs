@@ -1,7 +1,7 @@
 // Unit checks for the DSH bridge. Run: node --test tests/test_dsh_bridge.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -372,6 +372,42 @@ test("an ignored approval times out to the desktop dialog", async () => {
   const entries = inboxEntries(root).sort((a, b) => a.date - b.date);
   assert.ok(entries.some((item) => item.status === "待确认"), "reminder was shown during the window");
   assert.ok(entries.some((item) => item.dismiss), "reminder is closed after timeout");
+});
+
+test("a failed delivery falls back immediately instead of holding the approval", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
+  alive(root);
+  chmodSync(root, 0o500);
+  const warnings = [];
+  const handlers = new Map();
+  apply(
+    { on: (event, handler) => handlers.set(event, handler), logger: { warn: (m) => warnings.push(m) } },
+    { dataDir: root, approvalTimeoutMs: 3000, pollMs: 10 },
+  );
+  const originalSetInterval = globalThis.setInterval;
+  let polls = 0;
+  globalThis.setInterval = (...args) => {
+    polls += 1;
+    return originalSetInterval(...args);
+  };
+  try {
+    let delegated = false;
+    const result = await handlers.get("approval/request")(
+      { agent: { session: session() }, toolName: "bash" },
+      async () => {
+        delegated = true;
+        return "ui-answer";
+      },
+    );
+    assert.equal(result, "ui-answer");
+    assert.equal(delegated, true, "desktop dialog handles the approval");
+    assert.equal(polls, 0, "no decision polling starts when the reminder cannot be delivered");
+    assert.match(warnings[0], /delivery failed/);
+  } finally {
+    globalThis.setInterval = originalSetInterval;
+    chmodSync(root, 0o700);
+  }
+  assert.equal(inboxCount(root), 0);
 });
 
 test("approvals are not claimed while MIRA is not running", async () => {

@@ -46,6 +46,7 @@ MIRA · AI Task Hub 0.2：macOS 菜单栏 AI 任务提醒中心。本地优先�
 | Q14 | P2 | 卸载脚本末尾 `"已删除 $DEST。…"` 中变量名与中文标点粘连，`set -u` 下每次卸载都以 unbound variable 退出 | 改为 `${DEST}` | ✅ R1 |
 | Q15 | P2 | 应用与脚本的安装注释不同，卸载互不识别；`remove` 删除补丁块时会把后续行粘到上一行 | 双向识别已知块 + 按块替换并复核 | ✅ R1 |
 | Q16 | P3 | `tick` 保存失败后，若无新事件则下一轮 `changed == false`，不再重试保存，内存状态可能丢失 | 记录未完成保存，下轮重试 | ✅ R4 |
+| Q17 | P2 | DSH 审批提醒投递失败（收件箱不可写）时仍等待 60 秒才回落，期间原生对话框被占住且用户看不到任何提醒 | 投递失败立即交还桌面端 | ✅ R6 |
 | — | 跳过 | 历史/`seen` 无限增长 | 涉及数据保留语义，需产品决定 | 记录 |
 | — | 跳过 | DSH 会话标题在标题生成前回退为短标识 | 已文档化，改动收益低 | 记录 |
 
@@ -112,6 +113,13 @@ MIRA · AI Task Hub 0.2：macOS 菜单栏 AI 任务提醒中心。本地优先�
 - 验证：Python 11 项全部通过（新增缺失/空白 session、null session 不落盘、根目录/空/缺失/非字符串 cwd、真实 Codex 项目名、null tool_name）；`bash scripts/build.sh` 成功；Node 28 项、Swift 断言通过。
 - 行为兼容性：正常 payload 的 id、标题、来源、链接、去重规则不变；仅修复异常输入。
 
+### R6 · 2026-11-11 · DSH 审批投递失败快速回落（Q17）
+
+- 根因：`deliver()` 吞掉写收件箱的异常；审批处理器随后仍进入 `waitForDecision`，而 MIRA 根本没收到提醒，只能等 60 秒超时后回落，期间 DSH 原生对话框被挂起。
+- 修改（`integrations/dsh/index.js`）：`deliver` 返回是否成功；审批处理在投递失败时立即 `return next()`，不创建轮询定时器、不写 dismissal。
+- 验证：Node 29 项通过。新增用例把 dataDir 设为可读但不可写（0500）、MIRA 心跳有效，断言审批立即由桌面端处理、没有启动决策轮询、没有收件箱文件，并记录了 delivery failed 警告。
+- 行为兼容性：投递成功的路径完全不变；仅收件箱不可写这一失败路径从「等待超时」变为「立即回落」。
+
 ## 4. 恢复入口
 
 ```sh
@@ -122,4 +130,4 @@ node --test tests/test_dsh_bridge.mjs
 swiftc -module-cache-path /tmp/mira-swift-cache Sources/Core.swift tests/CoreTests.swift -o /tmp/mira-core-tests && /tmp/mira-core-tests
 ```
 
-下一项：全量回归、复查新问题并收尾（Q8 已完成）。
+下一项：Q18（Codex hooks 备份冲突）与 Q19（成功提示误用红色错误条），随后全量回归。

@@ -86,8 +86,10 @@ export function apply(ctx, config) {
   function deliver(entry) {
     try {
       writeEntry(dataDir, entry);
+      return true;
     } catch (error) {
       ctx.logger?.warn?.(`mira-bridge: delivery failed: ${error?.message ?? error}`);
+      return false;
     }
   }
 
@@ -195,7 +197,9 @@ export function apply(ctx, config) {
       ttlMs: approvalTimeoutMs,
       link,
     });
-    deliver(entry);
+    // If MIRA cannot receive the request, do not sit on the approval: hand it
+    // straight back to the desktop dialog instead of waiting for a reply.
+    if (!deliver(entry)) return next();
     let decision = "defer";
     try {
       decision = await waitForDecision(token, request.signal);
