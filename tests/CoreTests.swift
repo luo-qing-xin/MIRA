@@ -48,6 +48,14 @@ private func writeEntryJSON(_ entry: Entry, to inbox: URL) throws -> URL {
         completion.done = true
         assert(Notify.due([completion], now: now).isEmpty)
         assert(Notify.due([], now: now).isEmpty)
+        // Closing an approval card hands the request back to DSH immediately;
+        // closing an ordinary notice must keep it pending.
+        var approvalCard = Entry(id: "approval-card", title: "确认", body: "", source: "DSH · MIRA", status: "待确认", link: "dsh://open", date: now, token: "abcd-1234")
+        assert(ReminderClose.decision(for: approvalCard) == "defer", "closing an approval defers it to DSH")
+        approvalCard.token = nil
+        assert(ReminderClose.decision(for: approvalCard) == nil, "closing a normal reminder keeps it")
+        approvalCard.token = "abcd-1234"; approvalCard.status = "待完成"
+        assert(ReminderClose.decision(for: approvalCard) == nil, "only a live approval produces a decision")
         assert(missed.date < now, "startup catches today's missed occurrence")
         assert(Schedule.due(plan, now: now.addingTimeInterval(60), calendar: calendar)!.id == missed.id, "stable dedup key")
         assert(Schedule.due(plan, now: now.addingTimeInterval(-4 * 3600), calendar: calendar) == nil)

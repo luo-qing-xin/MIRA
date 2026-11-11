@@ -324,9 +324,12 @@ struct ReminderView: View {
                 HStack(alignment: .top, spacing: 12) {
                     Text(entry.title).font(.system(size: 16, weight: .semibold)).lineLimit(3).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
-                    Button(action: dismiss) { Image(systemName: "xmark").font(.system(size: 12, weight: .medium)) }
+                    Button(action: {
+                        if let decision = ReminderClose.decision(for: entry) { _ = hub.decide(entry, decision) }
+                        dismiss()
+                    }) { Image(systemName: "xmark").font(.system(size: 12, weight: .medium)) }
                         .buttonStyle(.plain).foregroundStyle(quiet).accessibilityLabel("关闭提醒")
-                        .help("关闭提醒，保留任务记录")
+                        .help(entry.token != nil ? "关闭提醒，交还 DSH 原生对话框" : "关闭提醒，保留任务记录")
                 }
                 StatusLabel(text: entry.status)
                 Text(entry.body.isEmpty ? entry.status : entry.body).font(.system(size: 13)).foregroundStyle(quiet).lineLimit(3).fixedSize(horizontal: false, vertical: true)

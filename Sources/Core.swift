@@ -114,6 +114,13 @@ enum Notify {
         for index in indices where entries.indices.contains(index) { entries[index].notified = false }
     }
 }
+enum ReminderClose {
+    /// Closing an approval popup must hand the request back to DSH at once.
+    /// Otherwise the native dialog stays blocked until the 60-second timeout.
+    static func decision(for entry: Entry) -> String? {
+        entry.token != nil && entry.status == "待确认" ? "defer" : nil
+    }
+}
 enum Decisions {
     static let choices: Set<String> = ["allow", "deny", "defer"]
 
