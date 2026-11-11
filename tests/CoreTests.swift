@@ -268,6 +268,25 @@ private func writeEntryJSON(_ entry: Entry, to inbox: URL) throws -> URL {
         assert(firstBytes == Data("x".utf8) && secondBytes == Data("y".utf8))
         try FileManager.default.removeItem(at: inboxBox)
 
+        // A queue that cannot be listed must report an error instead of looking empty.
+        let blockedInbox = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("mira-blocked-\(UUID().uuidString)")
+        try Data("not a directory".utf8).write(to: blockedInbox)
+        var blockedData = HubData()
+        let blocked = Inbox.drain(inbox: blockedInbox, data: &blockedData, now: inboxNow, decoder: inboxDecoder)
+        assert(blocked.errors.count == 1 && blocked.errors[0].contains("不是文件夹"), "a file at the inbox path is reported")
+        assert(!blocked.changed && blocked.consumed.isEmpty)
+        try FileManager.default.removeItem(at: blockedInbox)
+
+        // A queue deleted while running is recreated instead of dropping events.
+        let recreatedInbox = blockedInbox.appendingPathComponent("inbox")
+        let recreated = Inbox.drain(inbox: recreatedInbox, data: &blockedData, now: inboxNow, decoder: inboxDecoder)
+        assert(recreated.errors.isEmpty && recreated.consumed.isEmpty)
+        var isDirectory: ObjCBool = false
+        assert(FileManager.default.fileExists(atPath: recreatedInbox.path, isDirectory: &isDirectory) && isDirectory.boolValue)
+        let inboxPermissions = try FileManager.default.attributesOfItem(atPath: recreatedInbox.path)[.posixPermissions] as? Int
+        assert(inboxPermissions == 0o700, "recreated queue stays private")
+        try FileManager.default.removeItem(at: blockedInbox)
+
         let decoderForToken = JSONDecoder(); decoderForToken.dateDecodingStrategy = .secondsSince1970
         let approvalJSON = Data("{\"id\":\"a\",\"title\":\"t\",\"body\":\"\",\"source\":\"DSH · MIRA\",\"status\":\"待确认\",\"link\":\"dsh://open\",\"date\":100,\"done\":false,\"notified\":false,\"token\":\"abcd-1234\"}".utf8)
         let decodedApproval = try decoderForToken.decode(Entry.self, from: approvalJSON)

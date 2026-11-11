@@ -158,7 +158,28 @@ enum Inbox {
     static func drain(inbox: URL, data: inout HubData, now: Date, decoder: JSONDecoder) -> Outcome {
         var outcome = Outcome()
         let fm = FileManager.default
-        let files = (try? fm.contentsOfDirectory(at: inbox, includingPropertiesForKeys: nil)) ?? []
+        // An unreadable or missing inbox used to look like "no events", which
+        // silently stopped reminder delivery. Report it, and recreate a queue
+        // that disappeared while the app was running.
+        var isDirectory: ObjCBool = false
+        if !fm.fileExists(atPath: inbox.path, isDirectory: &isDirectory) {
+            do {
+                try fm.createDirectory(at: inbox, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            } catch {
+                outcome.errors.append("收件箱无法创建：\(error.localizedDescription)")
+                return outcome
+            }
+        } else if !isDirectory.boolValue {
+            outcome.errors.append("收件箱路径不是文件夹：\(inbox.path)")
+            return outcome
+        }
+        let files: [URL]
+        do {
+            files = try fm.contentsOfDirectory(at: inbox, includingPropertiesForKeys: nil)
+        } catch {
+            outcome.errors.append("收件箱无法读取：\(error.localizedDescription)")
+            return outcome
+        }
         for url in files.filter({ $0.pathExtension == "json" }).sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
             do {
                 let entry = try decoder.decode(Entry.self, from: Data(contentsOf: url))
