@@ -122,34 +122,10 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
         writeHeartbeat()
         guard storageReady else { return }
         let now = Date()
-        var changed = false
         let inbox = root.appendingPathComponent("inbox")
-        let files = (try? FileManager.default.contentsOfDirectory(at: inbox, includingPropertiesForKeys: nil)) ?? []
-        for url in files.filter({ $0.pathExtension == "json" }).sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
-            do {
-                let entry = try decoder.decode(Entry.self, from: Data(contentsOf: url))
-                if let target = entry.dismiss {
-                    if data.close(target) { changed = true }
-                    closePopup?(target)
-                    UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [target])
-                    if save() { try FileManager.default.removeItem(at: url) }
-                    continue
-                }
-                guard Links.valid(entry.link) else { throw NSError(domain: "无效事件链接", code: 1) }
-                if !data.seen.contains(entry.id) {
-                    data.seen.insert(entry.id)
-                    if let thread = entry.thread {
-                        for i in data.entries.indices where data.entries[i].thread == thread && data.entries[i].date <= entry.date { data.entries[i].done = true }
-                    }
-                    // Old AI events stay in history rather than flooding the desktop after days away.
-                    var event = entry
-                    if now.timeIntervalSince(entry.date) > 86400 { event.done = true }
-                    data.entries.insert(event, at: 0)
-                    data.lastEvent = now
-                }
-                if save() { try FileManager.default.removeItem(at: url) }
-            } catch { self.error = "事件读取失败：\(error.localizedDescription)" }
-        }
+        let drained = Inbox.drain(inbox: inbox, data: &data, now: now, decoder: decoder)
+        if !drained.errors.isEmpty { error = drained.errors[drained.errors.count - 1] }
+        var changed = drained.changed
         for plan in data.plans {
             if let entry = Schedule.due(plan, now: now), !data.entries.contains(where: { $0.id == entry.id }) {
                 data.entries.insert(entry, at: 0); changed = true
@@ -162,7 +138,14 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
                 data.entries[i].notified = true; changed = true; ready.append(e)
             }
         }
-        if changed, !save() { return }
+        // One state write per tick, however many inbox files arrived. Files are
+        // only deleted after the save succeeded, so a failure retries next tick.
+        if !drained.consumed.isEmpty || changed, !save() { return }
+        for url in drained.consumed { try? FileManager.default.removeItem(at: url) }
+        for target in drained.dismissed {
+            closePopup?(target)
+            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [target])
+        }
         // Approvals must be actionable: show the card even when system
         // notifications are allowed, and skip the duplicate system banner.
         var showedApproval = false

@@ -87,6 +87,81 @@ enum Decisions {
     }
 }
 
+enum Inbox {
+    struct Outcome {
+        /// Files whose content was applied in memory. The caller deletes them only
+        /// after the state was saved, so a failed save is retried next tick.
+        var consumed: [URL] = []
+        /// Reminder ids that a silent dismissal closed; the UI closes their popups.
+        var dismissed: [String] = []
+        var changed = false
+        var errors: [String] = []
+    }
+
+    /// Drain queued events into `data`. Bad files are quarantined instead of being
+    /// retried forever, and every file is reported through the outcome so the
+    /// caller can batch a single state save per tick.
+    static func drain(inbox: URL, data: inout HubData, now: Date, decoder: JSONDecoder) -> Outcome {
+        var outcome = Outcome()
+        let fm = FileManager.default
+        let files = (try? fm.contentsOfDirectory(at: inbox, includingPropertiesForKeys: nil)) ?? []
+        for url in files.filter({ $0.pathExtension == "json" }).sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            do {
+                let entry = try decoder.decode(Entry.self, from: Data(contentsOf: url))
+                if let target = entry.dismiss {
+                    if data.close(target) { outcome.changed = true }
+                    outcome.dismissed.append(target)
+                    outcome.consumed.append(url)
+                    continue
+                }
+                guard Links.valid(entry.link) else { throw NSError(domain: "无效事件链接", code: 1) }
+                if !data.seen.contains(entry.id) {
+                    data.seen.insert(entry.id)
+                    if let thread = entry.thread {
+                        for i in data.entries.indices where data.entries[i].thread == thread && data.entries[i].date <= entry.date {
+                            data.entries[i].done = true
+                        }
+                    }
+                    // Old AI events stay in history rather than flooding the desktop after days away.
+                    var event = entry
+                    if now.timeIntervalSince(entry.date) > 86400 { event.done = true }
+                    data.entries.insert(event, at: 0)
+                    data.lastEvent = now
+                    outcome.changed = true
+                }
+                outcome.consumed.append(url)
+            } catch {
+                let reason = error.localizedDescription
+                do {
+                    let moved = try quarantine(url, inbox: inbox)
+                    outcome.errors.append("事件读取失败，已隔离 \(moved.lastPathComponent)：\(reason)")
+                } catch {
+                    outcome.errors.append("事件读取失败且无法隔离 \(url.lastPathComponent)：\(reason)")
+                }
+            }
+        }
+        return outcome
+    }
+
+    /// Move an unreadable event aside instead of retrying it every tick. Keep the
+    /// original bytes for diagnosis and make the copy private like a live event.
+    static func quarantine(_ file: URL, inbox: URL) throws -> URL {
+        let fm = FileManager.default
+        let folder = inbox.appendingPathComponent("rejected")
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let stem = file.deletingPathExtension().lastPathComponent
+        var target = folder.appendingPathComponent(file.lastPathComponent)
+        var suffix = 2
+        while fm.fileExists(atPath: target.path) {
+            target = folder.appendingPathComponent("\(stem)-\(suffix).json")
+            suffix += 1
+        }
+        try fm.moveItem(at: file, to: target)
+        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
+        return target
+    }
+}
+
 enum Links {
     static func valid(_ value: String) -> Bool {
         if value.isEmpty { return true }

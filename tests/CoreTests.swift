@@ -1,5 +1,13 @@
 import Foundation
 
+private func writeEntryJSON(_ entry: Entry, to inbox: URL) throws -> URL {
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .secondsSince1970
+    let url = inbox.appendingPathComponent(entry.id + ".json")
+    try encoder.encode(entry).write(to: url)
+    return url
+}
+
 @main struct Tests {
     static func main() throws {
         var calendar = Calendar(identifier: .gregorian)
@@ -136,6 +144,73 @@ import Foundation
         do { try Decisions.write(root: decisionBox, token: "abcd-1234", decision: "maybe") } catch { rejectedChoice = true }
         assert(rejectedChoice, "unknown decisions are refused")
         try FileManager.default.removeItem(at: decisionBox)
+
+        // Inbox drain: bad events are quarantined, old events archived, and every
+        // applied file is reported once so the caller can save a single time.
+        let inboxBox = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("mira-inbox-\(UUID().uuidString)")
+        let inboxDir = inboxBox.appendingPathComponent("inbox")
+        try FileManager.default.createDirectory(at: inboxDir, withIntermediateDirectories: true)
+        let inboxNow = Date(timeIntervalSince1970: 1_764_000_000)
+        let good = Entry(id: "event-1", title: "本轮结束", body: "", source: "Codex · MIRA", status: "本轮结束", link: "codex://threads/s1", date: inboxNow.addingTimeInterval(-30), thread: "s1")
+        let goodURL = try writeEntryJSON(good, to: inboxDir)
+        let old = Entry(id: "event-old", title: "旧事件", body: "", source: "Codex · MIRA", status: "本轮结束", link: "codex://threads/s2", date: inboxNow.addingTimeInterval(-90000), thread: "s2")
+        let oldURL = try writeEntryJSON(old, to: inboxDir)
+        let badLink = Entry(id: "event-bad", title: "坏链接", body: "", source: "Codex · MIRA", status: "本轮结束", link: "file:///etc/passwd", date: inboxNow, thread: "s3")
+        let badURL = try writeEntryJSON(badLink, to: inboxDir)
+        let brokenURL = inboxDir.appendingPathComponent("broken.json")
+        try Data("{not json".utf8).write(to: brokenURL)
+        let inboxDecoder = JSONDecoder()
+        inboxDecoder.dateDecodingStrategy = .secondsSince1970
+        var inboxData = HubData()
+        let outcome = Inbox.drain(inbox: inboxDir, data: &inboxData, now: inboxNow, decoder: inboxDecoder)
+        assert(outcome.changed)
+        assert(outcome.consumed.count == 2, "valid events are reported for deletion")
+        let consumedNames = Set(outcome.consumed.map(\.lastPathComponent))
+        assert(consumedNames == [goodURL.lastPathComponent, oldURL.lastPathComponent])
+        assert(outcome.errors.count == 2, "bad link and malformed JSON are reported")
+        assert(inboxData.seen.contains("event-1") && inboxData.seen.contains("event-old"))
+        assert(!inboxData.seen.contains("event-bad"), "invalid events are never inserted")
+        assert(inboxData.entries.count == 2)
+        assert(inboxData.entries.first(where: { $0.id == "event-old" })?.done == true, "old event is archived")
+        assert(FileManager.default.fileExists(atPath: goodURL.path), "drain leaves deletion to the caller")
+        assert(!FileManager.default.fileExists(atPath: badURL.path), "bad link is quarantined")
+        assert(!FileManager.default.fileExists(atPath: brokenURL.path), "malformed JSON is quarantined")
+        let rejectedDir = inboxDir.appendingPathComponent("rejected")
+        let rejectedNames = try FileManager.default.contentsOfDirectory(atPath: rejectedDir.path)
+        assert(rejectedNames.count == 2)
+        let rejectedBad = rejectedDir.appendingPathComponent(badURL.lastPathComponent)
+        assert(FileManager.default.fileExists(atPath: rejectedBad.path))
+        let rejectedPerms = try FileManager.default.attributesOfItem(atPath: rejectedBad.path)[.posixPermissions] as? Int
+        assert(rejectedPerms == 0o600, "quarantined events stay private")
+        for url in outcome.consumed { try FileManager.default.removeItem(at: url) }
+
+        let approvalEntry = Entry(id: "approval-1", title: "确认", body: "", source: "DSH · MIRA", status: "待确认", link: "dsh://open", date: inboxNow, thread: "s1")
+        inboxData.entries.append(approvalEntry)
+        let dismissal = Entry(id: "dismiss-approval-1", title: "已处理", body: "", source: "DSH", status: "已处理", link: "", date: inboxNow.addingTimeInterval(1), done: true, notified: true, thread: "s1", dismiss: "approval-1")
+        let dismissalURL = try writeEntryJSON(dismissal, to: inboxDir)
+        let second = Inbox.drain(inbox: inboxDir, data: &inboxData, now: inboxNow, decoder: inboxDecoder)
+        assert(second.changed)
+        assert(second.dismissed == ["approval-1"], "dismissal reports its target to the UI")
+        assert(second.consumed.map(\.lastPathComponent) == [dismissalURL.lastPathComponent])
+        assert(inboxData.entries.first(where: { $0.id == "approval-1" })?.done == true)
+        try FileManager.default.removeItem(at: dismissalURL)
+
+        let duplicateURL = try writeEntryJSON(good, to: inboxDir)
+        let third = Inbox.drain(inbox: inboxDir, data: &inboxData, now: inboxNow, decoder: inboxDecoder)
+        assert(!third.changed, "a duplicate is consumed without touching state")
+        assert(third.consumed.map(\.lastPathComponent) == [duplicateURL.lastPathComponent])
+
+        let collision = inboxDir.appendingPathComponent("collision.json")
+        try Data("x".utf8).write(to: collision)
+        let firstMove = try Inbox.quarantine(collision, inbox: inboxDir)
+        try Data("y".utf8).write(to: inboxDir.appendingPathComponent("collision.json"))
+        let secondMove = try Inbox.quarantine(inboxDir.appendingPathComponent("collision.json"), inbox: inboxDir)
+        assert(firstMove.lastPathComponent == "collision.json")
+        assert(secondMove.lastPathComponent == "collision-2.json", "quarantine never overwrites an earlier file")
+        let firstBytes = try Data(contentsOf: firstMove)
+        let secondBytes = try Data(contentsOf: secondMove)
+        assert(firstBytes == Data("x".utf8) && secondBytes == Data("y".utf8))
+        try FileManager.default.removeItem(at: inboxBox)
 
         let decoderForToken = JSONDecoder(); decoderForToken.dateDecodingStrategy = .secondsSince1970
         let approvalJSON = Data("{\"id\":\"a\",\"title\":\"t\",\"body\":\"\",\"source\":\"DSH · MIRA\",\"status\":\"待确认\",\"link\":\"dsh://open\",\"date\":100,\"done\":false,\"notified\":false,\"token\":\"abcd-1234\"}".utf8)
