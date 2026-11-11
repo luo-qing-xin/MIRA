@@ -1,6 +1,6 @@
 # MIRA 持续改进日志
 
-> 本文件是自主改进循环的断点恢复入口。每轮记录：发现、证据、修改、验证、风险、后续。
+> 本文件是自主改进循环的断点恢复入口。每轮记录：发现、证据、修改、验证、风险、后续。原名为 `AUTO_IMPROVEMENT_LOG.md`，R9 起按任务要求改为现名；R1–R8 的历史记录完整保留。
 
 ## 0. 项目定位与现有功能清单
 
@@ -25,6 +25,12 @@ MIRA · AI Task Hub 0.2：macOS 菜单栏 AI 任务提醒中心。本地优先�
 - 测试：Python 7 项通过；Node 28 项通过；Swift 断言通过（URL 白名单、dismiss、DSH 安装/移除）。
 - 运行：MIRA.app 已构建；本机 `~/.dsh/profiles/desktop` 的安装状态未在本次改动中触碰。
 - 已知且有文档的边界：DSH 深链只聚焦窗口；ChatGPT 云端任务不同步；历史不自动清理；每批只弹一个浮窗。
+
+### 1.1 交接基线（2026-11-11 16:07）
+
+- 工作区已有一批未提交的「桌面定时计划同步」功能：`Sources/ScheduledTasks.swift`、计划页/设置页入口、README 与测试。上一轮会话在提交前中断。
+- 先按现有测试验证：Python 11 项、Node 29 项、Swift 核心与计划两套断言、`scripts/build.sh` 全部通过，然后作为独立基线提交 `4791858`，不计入本轮优化。
+- 之后每个优化轮次单独提交，保证可单独回滚。基线时的 `OPTIMIZATION_LOG.md` 仍是 R1–R8 的内容。
 
 ## 2. 改进队列
 
@@ -51,6 +57,12 @@ MIRA · AI Task Hub 0.2：macOS 菜单栏 AI 任务提醒中心。本地优先�
 | Q19 | P2 | DSH 配置/移除/Codex 配置成功时把成功文案写进 `error`，界面用红色错误横幅展示成功 | 新增中性 notice 横幅 | ✅ R7 |
 | Q20 | P3 | `Links.valid` 对 scheme/host 大小写敏感，`HTTPS://CHATGPT.COM/...` 等语义等价链接被拒绝 | 比较前统一小写 | ✅ R8 |
 | Q21 | P3 | `installed` 不识别 `- id: "mira-bridge"`，卸载时可能误删仍被引用的插件目录 | 接受带引号的 id，未知格式走拒绝分支 | ✅ R8 |
+| Q22 | P1 | `tick` 在写盘前把 `notified` 置 true；保存失败时提前返回、未弹提醒，下轮保存成功后该标志已为 true，提醒永久丢失 | 纯函数选择通知 + 失败回滚内存标志 | ✅ R9 |
+| Q23 | P1 | 任一桌面计划文件解析失败就把 `scheduleSnapshotComplete` 置 false，所有计划停止 reconcile：暂停/删除/改名可读计划不再撤下或更新提醒 | 记录不可用计划 id，部分快照仍收敛；文件完全不可读时暂停删除判定 | ✅ R10 |
+| Q24 | P2 | 卸载脚本在补丁不可读时把它当作「没有 mira-bridge」，仍 `rm -rf` 插件目录；删除后的复核只认无引号行，残留引用不会被发现 | 不可读即拒绝、引号/注释行复核、原子写补丁并保留权限 | ✅ R11 |
+| Q25 | P3 | 安装脚本要求补丁文件已存在，与应用「缺失时按空层新建」不一致 | 缺失时创建空层 | ✅ R11 |
+| Q26 | P2 | `Inbox.drain` 用 `try?` 吞掉收件箱列举失败，事件静默不处理且界面无错误；运行中删除收件箱不会重建 | 报告错误、非目录拒绝、缺失时以 0700 重建 | ✅ R12 |
+| — | 跳过 | 桌面计划改到更晚时间时，当天提醒先记为已过期、到新时间再恢复 | 既有 `ScheduledTasksTests` 明确断言该行为，属产品取舍，不擅自改动 | 记录 |
 | — | 跳过 | 历史/`seen` 无限增长 | 涉及数据保留语义，需产品决定 | 记录 |
 | — | 跳过 | DSH 会话标题在标题生成前回退为短标识 | 已文档化，改动收益低 | 记录 |
 
@@ -141,6 +153,62 @@ MIRA · AI Task Hub 0.2：macOS 菜单栏 AI 任务提醒中心。本地优先�
 - 验证：Swift 断言 PASS（新增三种大写链接、恶意后缀仍拒绝，带引号 id 命中、`mira-bridge-2` 仍不命中）；`bash scripts/build.sh` 成功；Python 11 项、Node 29 项通过。
 - 行为兼容性：合法小写链接与既有安装格式行为不变；仅接受原本被误拒的等价输入，并避免一种误删。
 
+### R9 · 2026-11-11 · 保存失败不再丢失提醒（Q22）
+
+- 证据：`Hub.tick` 在 `save()` 之前把可提醒条目的 `notified` 置为 true；保存失败时函数直接 `return`，通知/弹窗尚未发出。下一轮 `savePending` 重试成功后，条目仍是 `notified = true`，于是永远不会再提醒。触发条件为写盘失败（磁盘满、权限、数据目录异常）后恢复，属于状态与通知不一致导致的静默丢失。
+- 修改（`Sources/Core.swift`、`Sources/App.swift`、`tests/CoreTests.swift`）：
+  - 新增纯函数 `Notify.due`（选出 active、未通知、非运行中、未到未来 snooze 的条目）、`Notify.mark`、`Notify.rollback`。
+  - `tick` 用 `dueIndices` 选择并标记；保存失败时对同一批索引执行 `rollback`，保留 `savePending`，下一轮重新选出并补发。
+  - 未改变正常保存路径、通知顺序或去重键。
+- 验证：
+  - `swiftc Sources/Core.swift tests/CoreTests.swift` + 运行 → PASS。新增断言覆盖：只选出合格条目、已通知/运行中/未到 snooze/已过期被排除、mark 后不再重复、rollback 后同一批重新变成待通知、`本轮结束` 首次通知一次、空列表安全。
+  - `bash scripts/build.sh` 成功；Python 11 项、Node 29 项通过。
+  - 另在独立 worktree 中只应用 R9 暂存内容，重新编译并运行 Swift 断言与构建，确认该提交可独立工作。
+- 行为兼容性：保存成功时行为完全不变；只有保存失败路径从「静默丢失」改为「下一轮补发」。若写盘持续失败，提醒会持续延迟并在错误横幅提示，不会假装已通知。
+- 剩余风险：没有做真实磁盘故障注入（GUI 依赖系统通知中心）；通知选择/回滚不变量已由纯函数测试覆盖。
+
+### R10 · 2026-11-11 · 单个计划文件异常不再冻结全部计划同步（Q23）
+
+- 证据：`Hub.syncSchedules` 把 `scheduleSnapshotComplete` 设为 `snapshot.issues.isEmpty`，`tick` 只有 complete 时才执行 `DesktopSchedules.reconcile`。任一 `automation.toml` 解析失败（例如不支持的月度规则）都会让所有桌面计划停止同步：来源里暂停、删除或改名一个**可读**计划后，MIRA 当天提醒不会撤下或更新，与 README 的承诺矛盾。
+- 修改（`Sources/ScheduledTasks.swift`、`Sources/App.swift`、`tests/ScheduledTasksTests.swift`）：
+  - `Snapshot` 新增 `unavailable`（存在但无法完整解析的计划 id）与 `removalsAllowed`。
+  - `planID` 从原始 TOML 提取 `id`；解析失败但 id 可恢复时只保护该计划，其余计划照常 reconcile。
+  - `reconcile` 接受 `unavailable` 与 `allowRemovals`：不可用计划的当天提醒保留，其它已消失计划仍撤下；文件**完全不可读**时 id 不可知，`allowRemovals = false`，该快照只更新已有计划、不删除任何提醒。
+  - `Hub` 以 `scheduleLoaded` 区分「同步成功」与「目录列举失败」，替换原来的全局 complete 门槛，并传递 `desktopUnavailable` / `desktopRemovalsAllowed`。
+- 验证：
+  - 计划测试改为临时目录夹具（不再读取真实 `~/.codex`，测试可重复）。新增：混合快照（可读 + 不支持规则 + 已暂停）、解析失败计划的提醒保留、已暂停计划撤下、文件删除后最终撤下、可读计划在坏文件存在时仍更新、不可读文件阻止删除判定、恢复可读后恢复删除。
+  - `swiftc Sources/Core.swift Sources/ScheduledTasks.swift tests/ScheduledTasksTests.swift` + 运行 → PASS；`bash scripts/build.sh` 成功；Python 11 项（R11 新增脚本测试后为 17）、Node 29 项通过。
+- 行为兼容性：所有文件正常时行为不变；不支持规则的提醒以前完全停更，现在保留当天已有提醒且不再猜测新时间；不可读文件采用保守策略，不误删提醒。
+- 剩余风险：若不可读文件长期存在，已删除计划的提醒会保留到文件恢复可读或删除；这是有意的保守取舍，避免误撤用户提醒。
+
+### R11 · 2026-11-11 · DSH 安装/卸载脚本的失败安全（Q24/Q25）
+
+- 证据：
+  - 卸载脚本用 `grep` 判断补丁是否含 mira-bridge；补丁存在但不可读时 `grep` 返回 2，被当作「没有 mira-bridge」，随后仍 `rm -rf` 插件目录，补丁可能仍引用缺失模块 → DSH 启动失败。
+  - 删除后的复核只接受无引号整行，`- id: "mira-bridge"` 等残留引用不会被发现。
+  - 安装脚本要求补丁文件已存在，而应用安装逻辑允许缺失时按空层新建。
+- 修改（`scripts/install-dsh-bridge.sh`、`scripts/uninstall-dsh-bridge.sh`、`tests/test_dsh_scripts.py`）：
+  - 安装/卸载在改动前拒绝不可读补丁；安装缺失补丁时创建空层。
+  - 卸载后复核改用正则，识别带引号、带缩进/注释的等价 id；仍有残留则退出且不删除插件。
+  - 补丁清理改为同目录临时文件 + `chmod` 保留原权限 + `replace` 原子落盘，避免半写补丁导致 DSH 无法启动。
+- 验证：
+  - 新增 `tests/test_dsh_scripts.py`（6 项，Python 总数 17）：缺失补丁安装并幂等、正常安装→卸载保留无关配置、应用格式块卸载、不可读补丁时安装/卸载均拒绝且插件保留、引用号残留时拒绝且补丁逐字节不变、未知格式拒绝且插件保留。
+  - `bash -n` 两个脚本通过；临时 `DSH_HOME` 手工往返（无补丁安装→卸载、引用号残留拒绝、不可读拒绝）符合预期；`bash scripts/build.sh` 成功。
+- 行为兼容性：正常安装/卸载输出与语义不变；卸载后补丁仍可能留下一个空行（修改前也如此）；未知格式继续拒绝并保留插件。
+- 剩余风险：仍是文本块识别而非完整 YAML 解析；这是既有设计，避免引入第三方依赖。
+
+### R12 · 2026-11-11 · 收件箱不可读时不再静默丢事件（Q26）
+
+- 证据：`Inbox.drain` 用 `(try? contentsOfDirectory) ?? []`，收件箱权限错误、路径被替换为文件或在运行中被删除时都表现为「没有事件」；界面不报错，Codex/DSH 提醒静默停止。
+- 修改（`Sources/Core.swift`、`tests/CoreTests.swift`）：
+  - 先检查收件箱路径：缺失时以 0700 重建（覆盖运行中误删）；存在但不是目录时返回明确错误。
+  - 列举失败写入 `Outcome.errors`，由现有错误横幅显示；坏 JSON/坏链接仍走 `rejected/` 隔离。
+- 验证：
+  - Swift 断言新增：收件箱路径是普通文件时返回「不是文件夹」且不消费；缺失队列被重建为 0700 目录且无错误。
+  - 原有收件箱测试（隔离、批量消费、dismiss、去重、权限）全部继续通过；`bash scripts/build.sh` 成功；Python 17 项、Node 29 项通过。
+- 行为兼容性：正常队列处理完全不变；只有在队列本身不可用时才新增错误提示/重建。
+- 剩余风险：权限持续错误时同一错误会随每 3 秒 tick 重复显示（这是需要用户处理的配置问题，而非可隔离的坏文件）；未尝试自动修改目录权限。
+
 ## 4. 恢复入口
 
 ```sh
@@ -149,11 +217,12 @@ bash scripts/build.sh
 python3 -m unittest discover -s tests -p 'test_*.py'
 node --test tests/test_dsh_bridge.mjs
 swiftc -module-cache-path /tmp/mira-swift-cache Sources/Core.swift tests/CoreTests.swift -o /tmp/mira-core-tests && /tmp/mira-core-tests
+swiftc -module-cache-path /tmp/mira-swift-cache Sources/Core.swift Sources/ScheduledTasks.swift tests/ScheduledTasksTests.swift -o /tmp/mira-schedules-tests && /tmp/mira-schedules-tests
 ```
 
-下一项：无新增高收益项；进入全量回归与收尾。
+下一项：R13 通知权限在系统设置变更后刷新；R14 候选为日历边界与剩余手写检查项，需先确认收益再动手。
 
-## 5. 最终验收（2026-11-11 12:58）
+## 5. 历史最终验收（R1–R8，2026-11-11 12:58）
 
 - 构建：`bash scripts/build.sh` 成功；`codesign --verify --deep --strict` 通过；`Contents/Resources` 的 `receive.py` / `index.js` / `entry.js` 与仓库源文件 sha1 一致。
 - 测试：Python 11 项通过；Node 29 项通过；Swift 断言通过（计划/DST、URL 白名单含大小写、持久化、dismiss、收件箱隔离与批量消费、DSH 安装/移除/备份、审批决定）。
