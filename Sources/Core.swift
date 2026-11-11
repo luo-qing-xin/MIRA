@@ -188,6 +188,25 @@ enum Links {
     }
 }
 
+enum Backups {
+    /// First free backup path. Two backups within the same second must not
+    /// overwrite each other; `ext` is empty for suffix-only names.
+    static func unique(in directory: URL, stem: String, extension ext: String = "") -> URL {
+        let fm = FileManager.default
+        func candidate(_ suffix: String) -> URL {
+            directory.appendingPathComponent(stem + suffix + (ext.isEmpty ? "" : "." + ext))
+        }
+        if !fm.fileExists(atPath: candidate("").path) { return candidate("") }
+        var index = 2
+        while index < 1000 {
+            let url = candidate("-\(index)")
+            if !fm.fileExists(atPath: url.path) { return url }
+            index += 1
+        }
+        return candidate("-" + UUID().uuidString)
+    }
+}
+
 enum DSHLink {
     static let bridgeRows = """
     - insert:
@@ -276,16 +295,8 @@ enum DSHLink {
         if fm.fileExists(atPath: destination.path) { try fm.removeItem(at: destination) }
     }
 
-    /// Two backups within the same second must not overwrite each other.
     static func backup(_ patch: URL, now: Date) -> URL {
-        let directory = patch.deletingLastPathComponent()
-        let stem = patch.lastPathComponent + ".mira-backup-\(Int(now.timeIntervalSince1970))"
-        var candidate = directory.appendingPathComponent(stem)
-        var suffix = 2
-        while FileManager.default.fileExists(atPath: candidate.path), suffix < 1000 {
-            candidate = directory.appendingPathComponent(stem + "-\(suffix)")
-            suffix += 1
-        }
-        return candidate
+        Backups.unique(in: patch.deletingLastPathComponent(),
+                       stem: patch.lastPathComponent + ".mira-backup-\(Int(now.timeIntervalSince1970))")
     }
 }

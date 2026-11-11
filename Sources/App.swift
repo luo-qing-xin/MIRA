@@ -28,6 +28,7 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
     @Published var data = HubData()
     @Published var section = "今日"
     @Published var error = ""
+    @Published var notice = ""
     @Published var notificationStatus = "检查中"
     @Published var loginEnabled = SMAppService.mainApp.status == .enabled
     @Published var installed = false
@@ -74,6 +75,7 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
     }
 
     func installDSH() {
+        notice = ""
         do {
             var files: [String: Data] = [:]
             for name in ["index", "entry"] {
@@ -84,15 +86,18 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
             }
             try DSHLink.install(profile: dshProfile, files: files)
             checkDSH()
-            error = "已配置 DSH 连接。重启 DeepSeek Harness 后生效。"
+            error = ""
+            notice = "已配置 DSH 连接。重启 DeepSeek Harness 后生效。"
         } catch { self.error = "DSH 连接配置失败：\(error.localizedDescription)" }
     }
 
     func removeDSH() {
+        notice = ""
         do {
             try DSHLink.remove(profile: dshProfile)
             checkDSH()
-            error = "已移除 DSH 连接，重启 DeepSeek Harness 后完全生效。"
+            error = ""
+            notice = "已移除 DSH 连接，重启 DeepSeek Harness 后完全生效。"
         } catch { self.error = "移除 DSH 连接失败：\(error.localizedDescription)" }
     }
     func save() -> Bool {
@@ -250,6 +255,7 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
         } else { installed = false }
     }
     func installHooks() {
+        notice = ""
         do {
             let script = root.appendingPathComponent("receive.py")
             guard let original = Bundle.main.url(forResource: "receive", withExtension: "py") else {
@@ -262,7 +268,9 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
                 let bytes = try Data(contentsOf: config)
                 guard let parsed = try JSONSerialization.jsonObject(with: bytes) as? [String: Any] else { throw NSError(domain: "hooks.json 不是对象", code: 1) }
                 object = parsed
-                try bytes.write(to: config.deletingLastPathComponent().appendingPathComponent("hooks.mira-backup-\(Int(Date().timeIntervalSince1970)).json"), options: .atomic)
+                let stamp = Int(Date().timeIntervalSince1970)
+                let backup = Backups.unique(in: config.deletingLastPathComponent(), stem: "hooks.mira-backup-\(stamp)", extension: "json")
+                try bytes.write(to: backup, options: .atomic)
             }
             var hooks = object["hooks"] as? [String: Any] ?? [:]
             let command = "/usr/bin/python3 '" + script.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
@@ -277,6 +285,8 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
             try FileManager.default.createDirectory(at: config.deletingLastPathComponent(), withIntermediateDirectories: true)
             try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]).write(to: config, options: .atomic)
             checkHooks()
+            error = ""
+            notice = "已写入本机连接配置。请在 Codex 中信任 MIRA 接收器，再开启新会话。"
         } catch { self.error = "连接配置失败：\(error.localizedDescription)" }
     }
 }

@@ -47,6 +47,8 @@ MIRA · AI Task Hub 0.2：macOS 菜单栏 AI 任务提醒中心。本地优先�
 | Q15 | P2 | 应用与脚本的安装注释不同，卸载互不识别；`remove` 删除补丁块时会把后续行粘到上一行 | 双向识别已知块 + 按块替换并复核 | ✅ R1 |
 | Q16 | P3 | `tick` 保存失败后，若无新事件则下一轮 `changed == false`，不再重试保存，内存状态可能丢失 | 记录未完成保存，下轮重试 | ✅ R4 |
 | Q17 | P2 | DSH 审批提醒投递失败（收件箱不可写）时仍等待 60 秒才回落，期间原生对话框被占住且用户看不到任何提醒 | 投递失败立即交还桌面端 | ✅ R6 |
+| Q18 | P3 | Codex hooks 备份名精确到秒，同一秒内重复配置会覆盖上一份备份（与 Q6 同类） | 共用 `Backups.unique` | ✅ R7 |
+| Q19 | P2 | DSH 配置/移除/Codex 配置成功时把成功文案写进 `error`，界面用红色错误横幅展示成功 | 新增中性 notice 横幅 | ✅ R7 |
 | — | 跳过 | 历史/`seen` 无限增长 | 涉及数据保留语义，需产品决定 | 记录 |
 | — | 跳过 | DSH 会话标题在标题生成前回退为短标识 | 已文档化，改动收益低 | 记录 |
 
@@ -120,6 +122,16 @@ MIRA · AI Task Hub 0.2：macOS 菜单栏 AI 任务提醒中心。本地优先�
 - 验证：Node 29 项通过。新增用例把 dataDir 设为可读但不可写（0500）、MIRA 心跳有效，断言审批立即由桌面端处理、没有启动决策轮询、没有收件箱文件，并记录了 delivery failed 警告。
 - 行为兼容性：投递成功的路径完全不变；仅收件箱不可写这一失败路径从「等待超时」变为「立即回落」。
 
+### R7 · 2026-11-11 · 备份去重与成功提示分流（Q18/Q19）
+
+- 根因：Codex hooks 备份名只到秒，重复配置可覆盖原始备份；`installDSH` / `removeDSH` / `installHooks` 把成功文案写进 `error`，主界面用红色错误横幅渲染，成功看起来像失败。
+- 修改：
+  - `Core.swift` 新增 `Backups.unique(in:stem:extension:)`，`DSHLink.backup` 与 `installHooks` 共用；同名冲突追加 `-2`、`-3`，Codex 备份保留 `.json` 扩展名。
+  - `App.swift` 新增 `notice` 状态：配置/移除 DSH、配置 Codex hooks 成功后清空 `error` 并写入中性提示；`Views.swift` 在错误横幅下方增加中性色 notice 横幅，可关闭。
+- 验证：Swift 断言 PASS（新增 `hooks.mira-backup-100.json` → `-100-2.json` 扩展名保持、DSH 备份 `-2` 精确命名）；`bash scripts/build.sh` 成功；Python 11 项、Node 29 项通过。
+- 行为兼容性：不新增操作流程；按钮、状态行与配置结果不变，仅成功/失败提示的视觉语义分离。
+- 剩余风险：notice 与 error 可同时存在（例如先成功再保存失败），两者都可手动关闭；未做自动互斥，避免隐藏真实错误。
+
 ## 4. 恢复入口
 
 ```sh
@@ -130,4 +142,4 @@ node --test tests/test_dsh_bridge.mjs
 swiftc -module-cache-path /tmp/mira-swift-cache Sources/Core.swift tests/CoreTests.swift -o /tmp/mira-core-tests && /tmp/mira-core-tests
 ```
 
-下一项：Q18（Codex hooks 备份冲突）与 Q19（成功提示误用红色错误条），随后全量回归。
+下一项：全量回归与收尾。

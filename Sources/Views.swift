@@ -138,6 +138,10 @@ struct HubView: View {
                 HStack { Text(hub.error).font(.caption).foregroundStyle(.red); Spacer(); Button("关闭") { hub.error = "" } }
                     .padding(12).background(Color.red.opacity(0.06)).padding(.horizontal, 36)
             }
+            if !hub.notice.isEmpty {
+                HStack { Text(hub.notice).font(.caption).foregroundStyle(ink); Spacer(); Button("关闭") { hub.notice = "" } }
+                    .padding(12).background(oatmeal.opacity(0.7)).padding(.horizontal, 36)
+            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     if hub.section == "今日" { today }
