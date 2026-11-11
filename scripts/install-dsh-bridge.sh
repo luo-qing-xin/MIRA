@@ -1,6 +1,7 @@
 #!/bin/bash
 # Mount the MIRA bridge into the DSH desktop profile.
-# The bridge only observes: it never approves, denies, or answers anything.
+# The bridge observes events; while MIRA is alive it may also answer an
+# approval from the MIRA panel (one-shot token), otherwise DSH handles it.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -25,12 +26,24 @@ cp "$SRC/index.js" "$SRC/entry.js" "$DEST/"
 chmod 700 "$DEST"
 chmod 600 "$DEST"/*.js
 
-if grep -q "id: mira-bridge" "$PATCH"; then
+ROW_RE='id:[[:space:]]*["'"'"']?mira-bridge["'"'"']?([[:space:]#]|$)'
+if grep -qE "$ROW_RE" "$PATCH"; then
   echo "已连接：profile 的补丁层里已经有 mira-bridge。"
   exit 0
 fi
 
-cp "$PATCH" "$PATCH.mira-backup-$(date +%s)"
+BACKUP="$PATCH.mira-backup-$(date +%s)"
+suffix=2
+while [ -e "$BACKUP" ]; do
+  BACKUP="$PATCH.mira-backup-$(date +%s)-$suffix"
+  suffix=$((suffix + 1))
+done
+cp "$PATCH" "$BACKUP"
+
+# `[]` is the documented disabled layer; appending a list item after it is invalid YAML.
+if ! grep -vE '^[[:space:]]*(#|$|---[[:space:]]*$)' "$PATCH" | grep -qvE '^[[:space:]]*\[\][[:space:]]*$'; then
+  : > "$PATCH"
+fi
 cat >> "$PATCH" <<'EOF'
 
 # MIRA bridge (added by scripts/install-dsh-bridge.sh)

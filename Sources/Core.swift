@@ -98,21 +98,38 @@ enum Links {
 }
 
 enum DSHLink {
-    static let patchBlock = """
-    # MIRA bridge (added by MIRA)
+    static let bridgeRows = """
     - insert:
         - id: mira-bridge
           name: './plugins/mira-bridge/index.js'
 
     """
-    static let marker = "id: mira-bridge"
+    static let patchBlock = "# MIRA bridge (added by MIRA)\n" + bridgeRows
+    /// Same rows as the shell installer writes; kept so either installer can be undone.
+    static let scriptPatchBlock = "# MIRA bridge (added by scripts/install-dsh-bridge.sh)\n" + bridgeRows
+    static let patchBlocks = [patchBlock, scriptPatchBlock]
 
     static func profile(_ environment: [String: String], home: URL) -> URL {
         let root = environment["DSH_HOME"].map { URL(fileURLWithPath: $0) } ?? home.appendingPathComponent(".dsh")
         return root.appendingPathComponent("profiles/desktop")
     }
 
-    static func installed(patch: String) -> Bool { patch.contains(marker) }
+    /// Match the row itself, not a string fragment: `id: mira-bridge-2` is a different plugin.
+    static func installed(patch: String) -> Bool {
+        patch.split(whereSeparator: \.isNewline).contains { line in
+            let text = String(line).trimmingCharacters(in: .whitespaces)
+            return text == "- id: mira-bridge" || text == "id: mira-bridge"
+        }
+    }
+
+    /// `[]` is the documented way to disable the patch layer. Appending a list item
+    /// after it produces invalid YAML, so the disabled layer must be replaced instead.
+    static func isDisabledLayer(_ text: String) -> Bool {
+        let rows = text.split(whereSeparator: \.isNewline)
+            .map { String($0).trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") && $0 != "---" }
+        return !rows.isEmpty && rows.allSatisfy { $0 == "[]" }
+    }
 
     /// Copy the bridge into the profile and add its row. Never touches other rows.
     static func install(profile: URL, files: [String: Data], now: Date = Date()) throws {
@@ -128,12 +145,18 @@ enum DSHLink {
             try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
         }
         let patch = profile.appendingPathComponent("cordis.patch.yml")
-        var text = (try? String(contentsOf: patch, encoding: .utf8)) ?? ""
+        // Distinguish "no patch yet" from "patch unreadable": an unreadable file
+        // must fail the install instead of being silently replaced.
+        var text = ""
+        if fm.fileExists(atPath: patch.path) {
+            text = try String(contentsOf: patch, encoding: .utf8)
+        }
         guard !installed(patch: text) else { return }
         if !text.isEmpty {
-            try? text.write(to: backup(patch, now: now), atomically: true, encoding: .utf8)
+            try text.write(to: backup(patch, now: now), atomically: true, encoding: .utf8)
         }
-        if !text.hasSuffix("\n") { text += "\n" }
+        if isDisabledLayer(text) { text = "" }
+        if !text.isEmpty && !text.hasSuffix("\n") { text += "\n" }
         text += patchBlock
         try text.write(to: patch, atomically: true, encoding: .utf8)
     }
@@ -141,18 +164,37 @@ enum DSHLink {
     static func remove(profile: URL, now: Date = Date()) throws {
         let fm = FileManager.default
         let patch = profile.appendingPathComponent("cordis.patch.yml")
-        if let text = try? String(contentsOf: patch, encoding: .utf8), installed(patch: text) {
-            try? text.write(to: backup(patch, now: now), atomically: true, encoding: .utf8)
-            let cleaned = text.replacingOccurrences(of: "\n" + patchBlock, with: "")
-                .replacingOccurrences(of: patchBlock, with: "")
-            try cleaned.write(to: patch, atomically: true, encoding: .utf8)
+        if fm.fileExists(atPath: patch.path) {
+            // Unreadable config must not be reported as "nothing to remove": the
+            // plugin directory is deleted below, so fail before touching anything.
+            let text = try String(contentsOf: patch, encoding: .utf8)
+            if installed(patch: text) {
+                guard let block = patchBlocks.first(where: { text.contains($0) }) else {
+                    throw NSError(domain: "补丁层里的 mira-bridge 行不是安装时写入的格式，无法安全移除。已保留插件目录，请手动删除该项后重试。", code: 1)
+                }
+                let cleaned = text.replacingOccurrences(of: block, with: "")
+                // Verify with the same matcher that install uses before deleting files.
+                guard !installed(patch: cleaned) else {
+                    throw NSError(domain: "补丁层里的 mira-bridge 行无法安全移除。已保留插件目录，请手动删除该项后重试。", code: 1)
+                }
+                try text.write(to: backup(patch, now: now), atomically: true, encoding: .utf8)
+                try cleaned.write(to: patch, atomically: true, encoding: .utf8)
+            }
         }
         let destination = profile.appendingPathComponent("plugins/mira-bridge")
         if fm.fileExists(atPath: destination.path) { try fm.removeItem(at: destination) }
     }
 
+    /// Two backups within the same second must not overwrite each other.
     static func backup(_ patch: URL, now: Date) -> URL {
-        patch.deletingLastPathComponent()
-            .appendingPathComponent(patch.lastPathComponent + ".mira-backup-\(Int(now.timeIntervalSince1970))")
+        let directory = patch.deletingLastPathComponent()
+        let stem = patch.lastPathComponent + ".mira-backup-\(Int(now.timeIntervalSince1970))"
+        var candidate = directory.appendingPathComponent(stem)
+        var suffix = 2
+        while FileManager.default.fileExists(atPath: candidate.path), suffix < 1000 {
+            candidate = directory.appendingPathComponent(stem + "-\(suffix)")
+            suffix += 1
+        }
+        return candidate
     }
 }
