@@ -1,3 +1,6 @@
 dist/
 __pycache__/
 .DS_Store
+
+# 本地设计预览（HTML 源与渲染图），不参与构建
+previews/

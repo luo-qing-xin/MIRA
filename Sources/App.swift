@@ -3,26 +3,20 @@ import AppKit
 import UserNotifications
 import ServiceManagement
 
-let terracotta = Color(red: 0.64, green: 0.30, blue: 0.19)
-let teal = terracotta // Shared accent retained for the existing plan editor.
-let paper = Color(red: 0.98, green: 0.97, blue: 0.95)
-let ink = Color(red: 0.19, green: 0.18, blue: 0.16)
-let oatmeal = Color(red: 0.94, green: 0.92, blue: 0.88)
-let quiet = Color(red: 0.43, green: 0.40, blue: 0.36)
-
-// Native prominent buttons can lose their fill in non-activating panels.
-// Draw both layers explicitly so inactive windows keep the same contrast.
-struct MiraPrimaryButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(Color.white)
-            .padding(.horizontal, 16).padding(.vertical, 10)
-            .background(configuration.isPressed ? Color(red: 0.48, green: 0.21, blue: 0.13) : teal)
-            .clipShape(RoundedRectangle(cornerRadius: 9))
-            .contentShape(RoundedRectangle(cornerRadius: 9))
-    }
-}
+// Warm editorial palette: cream desk, paper cards, terracotta ink.
+let terracotta = Color(red: 0.706, green: 0.275, blue: 0.122) // #B4461F · 陶土红
+let paper = Color(red: 0.984, green: 0.969, blue: 0.941) // #FBF7F0
+let cream = Color(red: 0.945, green: 0.918, blue: 0.875) // #F1EADF
+let ink = Color(red: 0.137, green: 0.102, blue: 0.071) // #231A12
+let ink2 = Color(red: 0.247, green: 0.196, blue: 0.153) // #3F3227
+let oatmeal = Color(red: 0.894, green: 0.847, blue: 0.780) // #E4D8C7 · 分隔线
+let quiet = Color(red: 0.549, green: 0.486, blue: 0.420) // #8C7C6B
+let faint = Color(red: 0.702, green: 0.643, blue: 0.573) // #B3A492
+let sage = Color(red: 0.369, green: 0.478, blue: 0.369) // #5E7A5E
+let sageWash = Color(red: 0.894, green: 0.921, blue: 0.867) // #E4EBDD
+let butter = Color(red: 0.957, green: 0.890, blue: 0.682) // #F4E3AE
+let butterInk = Color(red: 0.420, green: 0.306, blue: 0.000)
+let plum = Color(red: 0.431, green: 0.247, blue: 0.333) // #6E3F55
 
 @MainActor final class Hub: ObservableObject {
     @Published var data = HubData()
@@ -72,7 +66,7 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
     var showPopup: ((Entry) -> Void)?
     var closePopup: ((String) -> Void)?
     var showMain: (() -> Void)?
-    var showTray: (() -> Void)?
+    var stateDidChange: (() -> Void)?
     var file: URL { root.appendingPathComponent("state.json") }
     init() {
         root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/MIRA")
@@ -134,6 +128,7 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
         do {
             try encoder.encode(data).write(to: file, options: .atomic)
             savePending = false
+            stateDidChange?()
             return true
         } catch {
             savePending = true
@@ -179,6 +174,7 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
     }
 
     func tick() {
+        defer { stateDidChange?() }
         writeHeartbeat()
         guard storageReady else { return }
         let now = Date()
@@ -340,25 +336,34 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
     }
 }
 
+// A task center can accompany a full-screen app and still support editing.
+@MainActor final class TaskCenterPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     var hub: Hub!
     var window: NSWindow!
     var status: NSStatusItem!
     var popup: NSPanel?
     var popupEntryId: String?
-    let popover = NSPopover()
     func applicationDidFinishLaunching(_ notification: Notification) {
         if NSRunningApplication.runningApplications(withBundleIdentifier: "local.mira.taskhub").count > 1 { NSApp.terminate(nil); return }
         hub = Hub()
         UNUserNotificationCenter.current().delegate = self
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1080, height: 760), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.title = "MIRA · AI Task Hub"; window.backgroundColor = NSColor(paper); window.titlebarAppearsTransparent = true; window.isReleasedWhenClosed = false; window.contentView = NSHostingView(rootView: HubView(hub: hub)); window.center()
+        let taskCenter = TaskCenterPanel(contentRect: NSRect(x: 0, y: 0, width: 1240, height: 840), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        taskCenter.hidesOnDeactivate = false
+        taskCenter.becomesKeyOnlyIfNeeded = false
+        taskCenter.isFloatingPanel = false
+        taskCenter.level = .normal
+        taskCenter.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        window = taskCenter
+        window.title = "MIRA · AI Task Hub"; window.backgroundColor = NSColor(cream); window.titlebarAppearsTransparent = true; window.titleVisibility = .hidden; window.titlebarSeparatorStyle = .none; window.isReleasedWhenClosed = false; window.minSize = NSSize(width: 1120, height: 740); window.contentView = NSHostingView(rootView: HubView(hub: hub)); window.center()
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         status.button?.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "MIRA 任务中心")
-        status.button?.target = self; status.button?.action = #selector(toggleTray)
-        popover.behavior = .transient
-        popover.contentViewController = NSHostingController(rootView: TrayView(hub: hub))
-        hub.showTray = { [weak self] in self?.toggleTray() }
+        status.button?.target = self; status.button?.action = #selector(openTaskCenter)
+        hub.stateDidChange = { [weak self] in self?.updateStatusItem() }
         hub.showMain = { [weak self] in self?.showWindow() }
         hub.showPopup = { [weak self] entry in self?.showPopup(entry) }
         hub.closePopup = { [weak self] id in
@@ -369,11 +374,37 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
         }
         showWindow(); hub.start()
     }
-    @objc func showWindow() { popover.performClose(nil); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
-    @objc func toggleTray() {
-        guard let button = status.button else { return }
-        if popover.isShown { popover.performClose(nil) }
-        else { popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY); popover.contentViewController?.view.window?.makeKey() }
+    @objc func showWindow() {
+        // The pointer identifies the display whose menu bar was clicked, even
+        // when the existing window belongs to another display or desktop.
+        let target = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main
+        let changingSpace = !window.isOnActiveSpace
+        if changingSpace { window.orderOut(nil) }
+        if let target, changingSpace || !window.isVisible || window.screen != target {
+            let visible = target.visibleFrame
+            var frame = window.frame
+            frame.size.width = min(frame.width, visible.width)
+            frame.size.height = min(frame.height, visible.height)
+            frame.origin = NSPoint(x: visible.midX - frame.width / 2, y: visible.midY - frame.height / 2)
+            window.setFrame(frame, display: false)
+        }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        window.orderFrontRegardless()
+        // Move/order the panel on this Space before activating for text input.
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+    @objc func openTaskCenter() {
+        hub.section = "今日"
+        showWindow()
+    }
+    func updateStatusItem() {
+        let count = hub.active.filter { $0.status == "待确认" || $0.status == "待补充信息" }.count
+        status.button?.title = count > 0 ? " \(count)" : ""
+        status.button?.imagePosition = .imageLeading
+        let description = count > 0 ? "MIRA · \(count) 项需要你处理，点击打开任务中心" : "MIRA · 点击打开任务中心"
+        status.button?.toolTip = description
+        status.button?.setAccessibilityLabel(description)
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showWindow(); return true }
     func showPopup(_ entry: Entry) {

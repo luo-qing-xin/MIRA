@@ -1,28 +1,154 @@
 import SwiftUI
 import AppKit
 
-func editorial(_ size: CGFloat) -> Font { .custom("Songti SC", size: size) }
+// MARK: - 字体
 
-struct QuietButtonStyle: ButtonStyle {
+private let serifTypeScale: CGFloat = 1.08
+private let numeralTypeScale: CGFloat = 1.06
+private let uiTypeScale: CGFloat = 1.15
+
+func editorial(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
+    .custom("Songti SC", size: size * serifTypeScale).weight(weight)
+}
+
+func numeral(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
+    .custom("Georgia", size: size * numeralTypeScale).weight(weight)
+}
+
+func ui(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
+    .system(size: size * uiTypeScale, weight: weight)
+}
+
+private let rustGradient = LinearGradient(
+    colors: [Color(red: 0.706, green: 0.275, blue: 0.122),
+             Color(red: 0.541, green: 0.196, blue: 0.071)],
+    startPoint: .topLeading, endPoint: .bottomTrailing)
+private let peachWash = Color(red: 0.976, green: 0.906, blue: 0.855)
+private let lilacWash = Color(red: 0.929, green: 0.894, blue: 0.945)
+let warmPaperInk = Color(red: 0.996, green: 0.969, blue: 0.945)
+
+// MARK: - 按钮与标签
+
+struct EditorialButtonStyle: ButtonStyle {
+    enum Kind { case ink, rust, cream, glass, outline, text, lightText }
+    var kind: Kind = .outline
+
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(.system(size: 12, weight: .medium))
-            .foregroundStyle(quiet).padding(.horizontal, 12).padding(.vertical, 9)
-            .background(oatmeal.opacity(configuration.isPressed ? 1 : 0.65))
-            .clipShape(RoundedRectangle(cornerRadius: 7))
+        configuration.label
+            .font(ui(11.5, .semibold))
+            .lineLimit(1)
+            .foregroundStyle(foreground)
+            .padding(.horizontal, horizontalPadding)
+            .padding(.vertical, verticalPadding)
+            .background(background(pressed: configuration.isPressed))
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay(stroke)
+            .contentShape(RoundedRectangle(cornerRadius: 9))
+            .opacity(configuration.isPressed ? 0.82 : 1)
+    }
+
+    private var horizontalPadding: CGFloat { kind == .text || kind == .lightText ? 2 : 12 }
+    private var verticalPadding: CGFloat { kind == .text || kind == .lightText ? 3 : 7 }
+
+    private var foreground: Color {
+        switch kind {
+        case .ink, .rust, .glass: return warmPaperInk
+        case .cream: return terracotta
+        case .outline, .text: return quiet
+        case .lightText: return Color(red: 0.929, green: 0.745, blue: 0.667)
+        }
+    }
+
+    @ViewBuilder private func background(pressed: Bool) -> some View {
+        switch kind {
+        case .ink: RoundedRectangle(cornerRadius: 9, style: .continuous).fill(pressed ? ink2 : ink)
+        case .rust: RoundedRectangle(cornerRadius: 9, style: .continuous).fill(pressed ? Color(red: 0.42, green: 0.15, blue: 0.06) : terracotta)
+        case .cream: RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color(red: 1, green: 0.953, blue: 0.902))
+        case .glass: RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.white.opacity(0.14))
+        case .outline: RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.clear)
+        case .text, .lightText: Color.clear
+        }
+    }
+
+    @ViewBuilder private var stroke: some View {
+        switch kind {
+        case .outline:
+            RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(oatmeal, lineWidth: 1)
+        case .glass:
+            RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(Color.white.opacity(0.22), lineWidth: 1)
+        default:
+            EmptyView()
+        }
     }
 }
 
-struct StatusLabel: View {
+struct StatusTag: View {
     let text: String
-    var urgent: Bool { text == "待确认" || text == "待补充信息" }
+    var inverted = false
+
     var body: some View {
-        Text(text).font(.system(size: 11, weight: .medium))
-            .foregroundStyle(urgent ? Color(red: 0.52, green: 0.28, blue: 0.07) : quiet)
-            .padding(.horizontal, 9).padding(.vertical, 5)
-            .background(urgent ? Color(red: 1, green: 0.9, blue: 0.72) : oatmeal)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+        HStack(spacing: 4) {
+            Circle().fill(inverted ? warmPaperInk.opacity(0.7) : foreground).frame(width: 4, height: 4)
+            Text(text).font(ui(9, .semibold)).tracking(0.4)
+        }
+        .foregroundStyle(inverted ? warmPaperInk.opacity(0.92) : foreground)
+        .padding(.horizontal, 7).padding(.vertical, 3)
+        .background(Capsule().fill(inverted ? Color.white.opacity(0.14) : backgroundWash))
+        .overlay(Capsule().stroke(inverted ? Color.white.opacity(0.22) : Color.clear, lineWidth: 1))
+    }
+
+    private var palette: (Color, Color) {
+        switch text {
+        case "待确认": return (butterInk, butter)
+        case "待补充信息": return (plum, lilacWash)
+        case "本轮结束": return (Color(red: 0.298, green: 0.400, blue: 0.298), sageWash)
+        case "运行中": return (sage, sageWash)
+        case "待完成": return (Color(red: 0.541, green: 0.278, blue: 0.114), peachWash)
+        case "已中断": return (Color(red: 0.541, green: 0.278, blue: 0.114), peachWash)
+        case "任务失败": return (Color(red: 0.62, green: 0.19, blue: 0.15), Color(red: 0.972, green: 0.894, blue: 0.878))
+        case "已拦截": return (plum, lilacWash)
+        case "已达上限": return (plum, lilacWash)
+        default: return (quiet, oatmeal.opacity(0.55))
+        }
+    }
+    private var foreground: Color { palette.0 }
+    private var backgroundWash: Color { palette.1 }
+}
+
+struct SourceGlyph: View {
+    let source: String
+    var inverted = false
+
+    var body: some View {
+        Text(glyph)
+            .font(numeral(10, .semibold))
+            .foregroundStyle(inverted ? warmPaperInk : glyphInk)
+            .frame(width: 22, height: 22)
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(inverted ? Color.white.opacity(0.16) : glyphWash))
+    }
+
+    private var glyph: String {
+        if source.hasPrefix("DSH") { return "D" }
+        if source.contains("Codex") { return "C" }
+        if source == "个人计划" { return "M" }
+        return String(source.prefix(1))
+    }
+    private var glyphInk: Color {
+        if source.hasPrefix("DSH") { return sage }
+        if source.contains("Codex") { return Color(red: 0.416, green: 0.337, blue: 0.616) }
+        if source == "个人计划" { return Color(red: 0.541, green: 0.278, blue: 0.114) }
+        return quiet
+    }
+    private var glyphWash: Color {
+        if source.hasPrefix("DSH") { return sageWash }
+        if source.contains("Codex") { return Color(red: 0.918, green: 0.902, blue: 0.965) }
+        if source == "个人计划" { return peachWash }
+        return oatmeal.opacity(0.45)
     }
 }
+
+// MARK: - Hub 辅助
 
 extension Hub {
     var todayPlans: [Plan] {
@@ -31,332 +157,1281 @@ extension Hub {
             .sorted { ($0.hour, $0.minute) < ($1.hour, $1.minute) }
     }
     var running: [Entry] { data.entries.filter { !$0.done && $0.status == "运行中" } }
-    func go(_ section: String) { self.section = section; showMain?() }
     func todayEntry(_ plan: Plan) -> Entry? {
         guard let occurrence = Schedule.due(plan, now: Date()) else { return nil }
         return data.entries.first { $0.id == occurrence.id }
     }
 }
 
-struct TaskRow: View {
-    @ObservedObject var hub: Hub
-    let entry: Entry
-    var compact = false
-    var history = false
-    var body: some View {
-        VStack(alignment: .leading, spacing: compact ? 11 : 14) {
-            HStack {
-                Label(entry.source, systemImage: entry.source == "个人计划" ? "calendar" : "cube")
-                    .font(.system(size: 12)).foregroundStyle(quiet)
-                Spacer()
-                StatusLabel(text: history ? entry.historyStatus : entry.status)
-            }
-            Text(entry.displayTitle).font(compact ? .system(size: 16, weight: .semibold) : editorial(24))
-                .foregroundStyle(ink).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-            if !entry.body.isEmpty {
-                Text(entry.body).font(.system(size: 13)).foregroundStyle(quiet).lineSpacing(4)
-                    .lineLimit(compact ? 2 : 3).textSelection(.enabled)
-            }
-            HStack(spacing: 8) {
-                Text(entry.date, style: .time).font(.system(size: 11)).foregroundStyle(quiet)
-                if let snooze = entry.snooze, snooze > Date() {
-                    Text("延后至 \(snooze.formatted(date: .omitted, time: .shortened))")
-                        .font(.system(size: 11)).foregroundStyle(terracotta)
-                }
-                Spacer()
-                if let thread = entry.thread {
-                    Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(thread, forType: .string) } label: { Image(systemName: "doc.on.doc") }
-                        .buttonStyle(.plain).foregroundStyle(quiet).help("复制任务标识").accessibilityLabel("复制任务标识")
-                }
-            }
-            if compact && !entry.link.isEmpty {
-                Button { hub.open(entry) } label: {
-                    HStack { Text("打开原任务"); Spacer(); Image(systemName: "arrow.up.right") }
-                }.buttonStyle(MiraPrimaryButtonStyle())
-            }
-            if !history && entry.status != "运行中" {
-                if entry.token != nil, entry.status == "待确认" {
-                    HStack(spacing: 8) {
-                        Button("允许一次") { hub.decide(entry, "allow") }.buttonStyle(MiraPrimaryButtonStyle())
-                        Button("拒绝") { hub.decide(entry, "deny") }.buttonStyle(QuietButtonStyle())
-                        Button("去 DSH 处理") { hub.decide(entry, "defer") }.buttonStyle(QuietButtonStyle())
-                        Spacer()
-                    }
-                } else {
-                    HStack {
-                        if !compact && !entry.link.isEmpty {
-                            Button { hub.open(entry) } label: { Label("打开原任务", systemImage: "arrow.up.right") }.buttonStyle(MiraPrimaryButtonStyle())
-                        }
-                        if entry.canSnooze {
-                            Button("10 分钟后") { hub.snooze(entry.id) }.buttonStyle(QuietButtonStyle())
-                        }
-                        Spacer()
-                        if !entry.automaticallyArchived {
-                            Button(entry.source == "个人计划" ? "完成" : "标为已处理") { hub.finish(entry.id) }
-                                .buttonStyle(QuietButtonStyle())
-                        }
-                    }
-                }
-            }
-            if !compact && (history || entry.status == "运行中") && !entry.link.isEmpty {
-                Button { hub.open(entry) } label: { Label("打开原任务", systemImage: "arrow.up.right") }.buttonStyle(QuietButtonStyle())
-            }
-        }.padding(.vertical, compact ? 14 : 22).padding(.horizontal, compact ? 15 : 0)
-            .background(compact ? paper : Color.clear)
-            .overlay(alignment: .bottom) { if !compact { Rectangle().fill(oatmeal).frame(height: 1) } }
-            .clipShape(RoundedRectangle(cornerRadius: compact ? 10 : 0))
-            .overlay { if compact { RoundedRectangle(cornerRadius: 10).stroke(oatmeal, lineWidth: 1) } }
-    }
-}
+// MARK: - 主界面
 
 struct HubView: View {
     @ObservedObject var hub: Hub
     @State var editing: Plan?
     @State var adding = false
+    @State private var completedOpen = true
+
+    private var pending: [Entry] { hub.active.filter { $0.source != "个人计划" } }
+    private var pendingCount: Int { pending.count }
+    private var approvals: Int { pending.filter { $0.status == "待确认" && $0.token != nil }.count }
+
     var body: some View {
         VStack(spacing: 0) {
-            HStack(alignment: .center) {
-                Text("mira.").font(.custom("Georgia", size: 34)).foregroundStyle(ink).frame(width: 150, alignment: .leading)
-                Spacer()
-                HStack(spacing: 30) {
-                    ForEach(["今日", "计划", "记录"], id: \.self) { tab in
-                        Button { hub.section = tab } label: {
-                            Text(tab).font(editorial(19)).foregroundStyle(hub.section == tab ? terracotta : quiet)
-                                .padding(.vertical, 12)
-                                .overlay(alignment: .bottom) { if hub.section == tab { Rectangle().fill(terracotta).frame(height: 2) } }
-                        }.buttonStyle(.plain)
-                    }
-                }
-                Spacer()
-                HStack(spacing: 12) {
-                    Circle().fill(hub.data.lastEvent == nil ? Color.orange : Color(red: 0.39, green: 0.52, blue: 0.35)).frame(width: 6, height: 6)
-                    Text(hub.data.lastEvent == nil ? (hub.installed ? "等待事件" : "尚未连接") : "已收到事件").font(.system(size: 11)).foregroundStyle(quiet)
-                    Button { hub.showTray?() } label: { Image(systemName: "menubar.rectangle") }.buttonStyle(.plain).help("打开菜单栏面板").accessibilityLabel("打开菜单栏面板")
-                    Button { hub.section = "设置" } label: { Image(systemName: "gearshape") }.buttonStyle(.plain).help("连接与设置").accessibilityLabel("连接与设置")
-                }.frame(width: 185, alignment: .trailing)
-            }.padding(.horizontal, 36).padding(.top, 12).padding(.bottom, 14)
-            Rectangle().fill(oatmeal).frame(height: 1).padding(.horizontal, 36)
+            masthead
+            ruleRow
             if !hub.error.isEmpty {
-                HStack { Text(hub.error).font(.caption).foregroundStyle(.red); Spacer(); Button("关闭") { hub.error = "" } }
-                    .padding(12).background(Color.red.opacity(0.06)).padding(.horizontal, 36)
+                banner(hub.error, color: Color(red: 0.65, green: 0.20, blue: 0.15)) { hub.error = "" }
             }
             if !hub.notice.isEmpty {
-                HStack { Text(hub.notice).font(.caption).foregroundStyle(ink); Spacer(); Button("关闭") { hub.notice = "" } }
-                    .padding(12).background(oatmeal.opacity(0.7)).padding(.horizontal, 36)
+                banner(hub.notice, color: ink2) { hub.notice = "" }
             }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    if hub.section == "今日" { today }
-                    if hub.section == "计划" { plans }
-                    if hub.section == "记录" { history }
-                    if hub.section == "设置" { settings }
-                }.padding(36).frame(maxWidth: .infinity, alignment: .leading)
-            }
-            HStack {
-                Text("本地优先 · 让重要的事，找到你。")
-                Spacer()
-                Text("MIRA 0.2")
-            }.font(.system(size: 10)).foregroundStyle(quiet).padding(.horizontal, 36).padding(.vertical, 13)
-        }.background(paper).foregroundStyle(ink).frame(minWidth: 960, minHeight: 670)
-            .preferredColorScheme(.light).tint(terracotta)
-            .sheet(isPresented: $adding) { PlanEditor(hub: hub, plan: editing) }
-    }
-    var today: some View {
-        VStack(alignment: .leading, spacing: 30) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("工作有进展，生活有安排。").font(editorial(38)).foregroundStyle(ink)
-                Spacer()
-                Text(Date(), format: .dateTime.month().day().weekday()).font(.system(size: 12)).foregroundStyle(quiet)
-            }
-            HStack(alignment: .top, spacing: 34) {
-                VStack(alignment: .leading, spacing: 0) {
-                    HStack { Text("AI 留给你的消息").font(editorial(23)); Spacer(); Text("\(hub.active.filter { $0.source != "个人计划" }.count) 项待处理").font(.system(size: 11)).foregroundStyle(quiet) }
-                        .padding(.bottom, 15)
-                    Rectangle().fill(oatmeal).frame(height: 1)
-                    let ai = hub.active.filter { $0.source != "个人计划" }
-                    if ai.isEmpty { empty("暂时没有待处理的消息", "AI 需要你时，提醒会出现在这里。", "tray") }
-                    ForEach(ai) { TaskRow(hub: hub, entry: $0) }
-                    if !hub.running.isEmpty {
-                        Text("正在进行").font(editorial(20)).padding(.top, 25)
-                        ForEach(hub.running) { TaskRow(hub: hub, entry: $0) }
-                    }
-                    if hub.data.lastEvent == nil {
-                        Button { hub.section = "设置" } label: { Label(hub.installed ? "查看连接状态" : "连接 Codex", systemImage: "link") }
-                            .buttonStyle(QuietButtonStyle()).padding(.top, 18)
-                    }
-                }.frame(maxWidth: .infinity, alignment: .leading)
-                VStack(alignment: .leading, spacing: 20) {
-                    HStack { Text("今日安排").font(editorial(23)); Spacer(); Image(systemName: "sun.max").foregroundStyle(terracotta) }
-                    if hub.todayPlans.isEmpty {
-                        Text("给自己留一点时间。").font(editorial(20)).padding(.top, 24)
-                        Text("添加健身、阅读或休息计划，\n到时间时，MIRA 会提醒你。").font(.system(size: 13)).foregroundStyle(quiet).lineSpacing(5)
-                    }
-                    ForEach(hub.todayPlans) { plan in agenda(plan) }
-                    Button { editing = nil; adding = true } label: { Label("添加计划", systemImage: "plus") }
-                        .buttonStyle(QuietButtonStyle()).padding(.top, 8)
-                }.padding(24).frame(width: 280, alignment: .leading).background(oatmeal.opacity(0.7))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-            }
+            content
+            footer
         }
+        .background(cream)
+        .foregroundStyle(ink)
+        .frame(minWidth: 1120, minHeight: 700)
+        .preferredColorScheme(.light)
+        .tint(terracotta)
+        .sheet(isPresented: $adding) { PlanEditor(hub: hub, plan: editing) }
     }
-    func agenda(_ p: Plan) -> some View {
-        VStack(alignment: .leading, spacing: 13) {
-            Text(String(format: "%02d:%02d", p.hour, p.minute)).font(.custom("Georgia", size: 43)).foregroundStyle(terracotta)
-            Text(p.title).font(editorial(22)).fixedSize(horizontal: false, vertical: true)
-            if !p.notes.isEmpty { Text(p.notes).font(.system(size: 12)).foregroundStyle(quiet).lineSpacing(6).fixedSize(horizontal: false, vertical: true) }
-            if let entry = hub.todayEntry(p) {
-                if entry.done { Label("今天已完成", systemImage: "checkmark.circle").font(.caption).foregroundStyle(quiet) }
-                else {
-                    HStack { Button("完成") { hub.finish(entry.id) }.buttonStyle(MiraPrimaryButtonStyle()); Button("10 分钟后") { hub.snooze(entry.id) }.buttonStyle(QuietButtonStyle()) }
+
+    // MARK: 顶部
+
+    private var masthead: some View {
+        HStack(alignment: .bottom, spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 0) {
+                    Text("mira").font(numeral(42)).foregroundStyle(ink)
+                    Text(".").font(numeral(42)).foregroundStyle(terracotta)
                 }
-            } else { Text("到时提醒 · 当天补发").font(.system(size: 11)).foregroundStyle(quiet) }
-            if p.origin == nil {
-                Button("编辑计划") { editing = p; adding = true }.buttonStyle(.plain).foregroundStyle(terracotta).font(.system(size: 11))
-            } else { Text(p.origin ?? "").font(.caption).foregroundStyle(quiet) }
-            Divider().padding(.top, 6)
+                Text("TODAY, SLOWLY")
+                    .font(ui(9, .semibold)).tracking(3.2).foregroundStyle(faint)
+            }
+            Spacer()
+            HStack(spacing: 24) {
+                ForEach(["今日", "计划", "记录"], id: \.self) { tab in
+                    navItem(tab)
+                }
+                Rectangle().fill(oatmeal).frame(width: 1, height: 14).padding(.horizontal, 2)
+                iconButton("gearshape") { hub.section = "设置" }
+                    .help("连接与设置")
+                    .accessibilityLabel("连接与设置")
+            }
+            .padding(.bottom, 2)
+        }
+        .padding(.horizontal, 44)
+        .padding(.top, 8)
+    }
+
+    private func navItem(_ tab: String) -> some View {
+        Button { hub.section = tab } label: {
+            VStack(spacing: 7) {
+                Text(tab)
+                    .font(ui(12.5, hub.section == tab ? .semibold : .regular))
+                    .tracking(0.6)
+                    .foregroundStyle(hub.section == tab ? ink : quiet)
+                Rectangle()
+                    .fill(hub.section == tab ? terracotta : Color.clear)
+                    .frame(width: 20, height: 2)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("切换到\(tab)")
+    }
+
+    private func iconButton(_ symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 12, weight: .regular))
+                .foregroundStyle(quiet)
+                .frame(width: 28, height: 28)
+                .background(Circle().fill(paper.opacity(0.65)))
+                .overlay(Circle().stroke(oatmeal, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var ruleRow: some View {
+        HStack(spacing: 14) {
+            Text(dateLine).font(numeral(9.5)).tracking(2).foregroundStyle(faint)
+            Rectangle().fill(oatmeal.opacity(0.75)).frame(height: 1)
+            HStack(spacing: 6) {
+                Circle().fill(connectionColor).frame(width: 5, height: 5)
+                Text(connectionText).font(ui(9.5)).foregroundStyle(faint)
+            }
+        }
+        .padding(.horizontal, 44)
+        .padding(.top, 14)
+        .padding(.bottom, 2)
+    }
+
+    private func banner(_ text: String, color: Color, close: @escaping () -> Void) -> some View {
+        HStack(spacing: 10) {
+            Text(text).font(ui(11)).foregroundStyle(color).lineLimit(2)
+            Spacer()
+            Button("关闭", action: close).buttonStyle(EditorialButtonStyle(kind: .text))
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 9).fill(color.opacity(0.06)))
+        .overlay(RoundedRectangle(cornerRadius: 9).stroke(color.opacity(0.16), lineWidth: 1))
+        .padding(.horizontal, 44)
+        .padding(.top, 8)
+    }
+
+    // MARK: 页面切换
+
+    @ViewBuilder private var content: some View {
+        switch hub.section {
+        case "计划": plansPage
+        case "记录": historyPage
+        case "设置": settingsPage
+        default: todayPage
         }
     }
-    func empty(_ title: String, _ detail: String, _ symbol: String) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Image(systemName: symbol).font(.system(size: 25, weight: .light)).foregroundStyle(terracotta)
-            Text(title).font(editorial(23))
-            Text(detail).font(.system(size: 13)).foregroundStyle(quiet)
-        }.padding(.vertical, 42).frame(maxWidth: .infinity, alignment: .leading)
+
+    private var footer: some View {
+        HStack {
+            HStack(spacing: 6) {
+                Text("让重要的事，找到你。").font(editorial(10.5)).foregroundStyle(faint)
+                Text("— mira").font(numeral(10.5)).italic().foregroundStyle(quiet)
+            }
+            Spacer()
+            Text("MIRA 0.2 · LOCAL FIRST")
+                .font(numeral(8.5)).tracking(1.8).foregroundStyle(faint)
+        }
+        .padding(.horizontal, 44)
+        .padding(.top, 10)
+        .padding(.bottom, 13)
     }
-    var plans: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            HStack { Text("把时间，留给重要的事。").font(editorial(34)); Spacer(); Button("＋ 新建计划") { editing = nil; adding = true }.buttonStyle(MiraPrimaryButtonStyle()) }
-            Text("每天或每周重复 · 当天错过补发 · 完成后不再打扰").font(.system(size: 12)).foregroundStyle(quiet)
-            HStack { Text(hub.scheduleStatus).font(.caption).foregroundStyle(quiet); Spacer(); Button("同步桌面计划") { hub.syncSchedules(); hub.tick() }.buttonStyle(QuietButtonStyle()) }
-            if hub.allPlans.isEmpty { empty("还没有个人计划", "从一个小小的日常开始。", "calendar") }
-            ForEach(hub.allPlans) { p in
-                HStack(alignment: .top, spacing: 25) {
-                    Text(String(format: "%02d:%02d", p.hour, p.minute)).font(.custom("Georgia", size: 32)).foregroundStyle(terracotta).frame(width: 100, alignment: .leading)
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(p.title).font(editorial(24))
-                        Text(p.weekdays.isEmpty ? "每天" : "每周 " + p.weekdays.sorted().map { ["", "日", "一", "二", "三", "四", "五", "六"][$0] }.joined(separator: " · ")).font(.caption).foregroundStyle(quiet)
-                        if !p.notes.isEmpty { Text(p.notes).font(.system(size: 13)).foregroundStyle(quiet).lineSpacing(4) }
-                        if let origin = p.origin {
-                            Text(origin + " · 在来源应用调整时间或暂停").font(.caption).foregroundStyle(quiet)
-                        } else { HStack {
-                            Button("编辑") { editing = p; adding = true }.buttonStyle(QuietButtonStyle())
-                            Button("删除", role: .destructive) {
-                                hub.data.plans.removeAll { $0.id == p.id }
-                                hub.data.entries.removeAll { $0.id.hasPrefix("plan-\(p.id)-") && !$0.done }; _ = hub.save()
-                            }.buttonStyle(.plain).font(.caption).foregroundStyle(quiet)
-                        } }
+
+    // MARK: 今日
+
+    private var todayPage: some View {
+        HStack(alignment: .top, spacing: 0) {
+            dateRail.frame(width: 148).padding(.trailing, 22)
+            columnLine
+            todayFeed.padding(.leading, 26).padding(.trailing, 24).frame(maxWidth: .infinity)
+            columnLine
+            agendaRail.frame(width: 290).padding(.leading, 24)
+        }
+        .padding(.horizontal, 44)
+        .padding(.top, 14)
+        .frame(maxHeight: .infinity)
+    }
+
+    private var columnLine: some View {
+        Rectangle().fill(oatmeal.opacity(0.7))
+            .frame(width: 1)
+            .frame(maxHeight: .infinity)
+    }
+
+    private var todayFeed: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Circle().fill(pendingCount == 0 ? sage : terracotta).frame(width: 5, height: 5)
+                Text(kicker).font(ui(9, .semibold)).tracking(2.2).foregroundStyle(faint)
+            }
+            Text(greetingHeadline)
+                .font(editorial(30))
+                .lineSpacing(7)
+                .foregroundStyle(ink)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 9)
+            Text(lede)
+                .font(ui(11.5))
+                .foregroundStyle(quiet)
+                .lineSpacing(4)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 6)
+            if !hub.running.isEmpty {
+                runningBand.padding(.top, 12)
+            }
+            sectionHeader.padding(.top, 14).padding(.bottom, 10)
+
+            ScrollViewReader { proxy in
+                ScrollView(showsIndicators: false) {
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        Color.clear.frame(height: 1).id("feed-top")
+                        feedContent
                     }
+                    .padding(.bottom, 4)
+                }
+                .onAppear {
+                    DispatchQueue.main.async { proxy.scrollTo("feed-top", anchor: .top) }
+                }
+                .onChange(of: pending.first?.id) { _ in
+                    withAnimation(.easeOut(duration: 0.18)) { proxy.scrollTo("feed-top", anchor: .top) }
+                }
+                .onChange(of: completedOpen) { open in
+                    guard open else { return }
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo("completed-section", anchor: .top)
+                    }
+                }
+            }
+            .frame(maxHeight: .infinity, alignment: .top)
+            .overlay(alignment: .bottom) {
+                LinearGradient(colors: [cream.opacity(0), cream], startPoint: .top, endPoint: .bottom)
+                    .frame(height: 18)
+                    .allowsHitTesting(false)
+            }
+
+            bottomLine
+        }
+    }
+
+    private var sectionHeader: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("等你决定").font(editorial(15, .semibold)).tracking(1.4)
+            Text(String(format: "%02d", pendingCount)).font(numeral(10)).foregroundStyle(terracotta)
+            Spacer()
+            Button { hub.section = "记录" } label: {
+                HStack(spacing: 3) {
+                    Text("全部记录")
+                    Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold))
+                }
+            }
+            .buttonStyle(EditorialButtonStyle(kind: .text))
+        }
+    }
+
+    @ViewBuilder private var feedContent: some View {
+        if pending.isEmpty {
+            emptyFeed
+        } else {
+            ForEach(Array(pending.enumerated()), id: \.element.id) { index, entry in
+                EntryCard(hub: hub, entry: entry,
+                          highlighted: index == 0 && entry.status == "待确认" && entry.token != nil)
+            }
+        }
+        if !completedToday.isEmpty {
+            completedSection.padding(.top, 6)
+        }
+    }
+
+    private var completedSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) { completedOpen.toggle() }
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(faint)
+                        .rotationEffect(.degrees(completedOpen ? 90 : 0))
+                    Text("今日已完成").font(ui(9, .semibold)).tracking(2).foregroundStyle(faint)
+                    Text("\(completedToday.count)").font(numeral(9)).foregroundStyle(faint)
                     Spacer()
-                    if p.origin == nil { Toggle("启用", isOn: Binding(get: { p.enabled }, set: { value in
-                        if let i = hub.data.plans.firstIndex(where: { $0.id == p.id }) { hub.data.plans[i].enabled = value; _ = hub.save(); hub.tick() }
-                    })).toggleStyle(.switch).fixedSize() }
-                }.padding(24).frame(maxWidth: .infinity, alignment: .leading).background(oatmeal.opacity(0.45)).clipShape(RoundedRectangle(cornerRadius: 10))
+                    Text(completedOpen ? "收起" : "展开").font(ui(9)).foregroundStyle(faint)
+                }
+                .contentShape(Rectangle())
+                .padding(.vertical, 4)
+            }
+            .buttonStyle(.plain)
+
+            if completedOpen {
+                VStack(spacing: 0) {
+                    ForEach(Array(completedToday.prefix(7))) { entry in
+                        CompletedRow(hub: hub, entry: entry)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(paper.opacity(0.55)))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(oatmeal.opacity(0.55), lineWidth: 1))
+                .padding(.top, 4)
+
+                if completedToday.count > 7 {
+                    Button { hub.section = "记录" } label: {
+                        HStack(spacing: 4) {
+                            Text("Show more")
+                            Text("· 还有 \(completedToday.count - 7) 条").foregroundStyle(faint)
+                            Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold))
+                        }
+                        .font(ui(9.5, .medium))
+                        .foregroundStyle(terracotta)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 9)
+                    .padding(.leading, 2)
+                }
+            }
+        }
+        .id("completed-section")
+    }
+
+    private var runningBand: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 7) {
+                Circle().fill(terracotta).frame(width: 5, height: 5)
+                Text("正在进行").font(ui(9, .semibold)).tracking(2).foregroundStyle(faint)
+                Text("\(hub.running.count)").font(numeral(9)).foregroundStyle(terracotta)
+                Spacer()
+            }
+            ForEach(hub.running.prefix(3)) { entry in
+                RunningStrip(hub: hub, entry: entry)
+            }
+            if hub.running.count > 3 {
+                Text("还有 \(hub.running.count - 3) 项正在进行")
+                    .font(ui(9)).foregroundStyle(faint).padding(.leading, 2)
             }
         }
     }
-    var history: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("每一步，都有迹可循。").font(editorial(34))
-            let items = hub.data.entries.filter { Schedule.inHistory($0, now: Date()) }
-            if items.isEmpty { empty("还没有历史记录", "本轮结束、已处理与已过期的提醒会保存在这里。", "clock") }
-            ForEach(items) { TaskRow(hub: hub, entry: $0, history: true) }
+
+    private var emptyFeed: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("都处理完了。").font(editorial(21)).foregroundStyle(ink)
+            Text("AI 需要你时，会先到这里。也可以在右侧安排今天的节奏。")
+                .font(ui(11)).foregroundStyle(quiet).lineSpacing(4)
+            if hub.data.lastEvent == nil {
+                Button { hub.section = "设置" } label: {
+                    HStack(spacing: 5) {
+                        Text(hub.installed ? "查看连接状态" : "配置本机连接")
+                        Image(systemName: "arrow.up.right").font(.system(size: 9, weight: .semibold))
+                    }
+                }
+                .buttonStyle(EditorialButtonStyle(kind: .ink))
+                .padding(.top, 4)
+            }
+        }
+        .padding(.vertical, 36)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var bottomLine: some View {
+        VStack(spacing: 0) {
+            Rectangle().fill(oatmeal.opacity(0.8)).frame(height: 1)
+            HStack(spacing: 7) {
+                Circle().fill(sage).frame(width: 5, height: 5)
+                Text("今天已完成 \(completedToday.count) 件 · 还有 \(pendingCount) 件等你决定")
+                    .font(ui(9.5)).foregroundStyle(faint)
+                Spacer()
+                Button { hub.section = "记录" } label: {
+                    HStack(spacing: 3) {
+                        Text("在记录里回看")
+                        Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold))
+                    }
+                }
+                .buttonStyle(EditorialButtonStyle(kind: .text))
+            }
+            .padding(.top, 8)
+        }
+        .padding(.top, 8)
+    }
+
+    // MARK: 左栏：日期
+
+    private var dateRail: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(dayString).font(editorial(74)).tracking(-2)
+            Text(weekdayString).font(ui(10.5, .semibold)).tracking(3)
+                .foregroundStyle(terracotta).padding(.top, 6)
+            Text(monthString).font(numeral(9.5)).tracking(1.8)
+                .foregroundStyle(faint).padding(.top, 4)
+
+            dashedRule.padding(.vertical, 15)
+
+            metric("TODAY", value: "\(planDone)", unit: " / \(planTotal)", ratio: planRatio)
+            metric("回应", value: "\(pendingCount)", unit: " 件", ratio: nil)
+                .padding(.top, 14)
+            if approvals > 0 {
+                metric("待批准", value: "\(approvals)", unit: " 次", ratio: nil)
+                    .padding(.top, 14)
+            }
+
+            Spacer(minLength: 12)
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    private var dashedRule: some View {
+        Rectangle().fill(oatmeal.opacity(0.8)).frame(height: 1)
+    }
+
+    private func metric(_ label: String, value: String, unit: String, ratio: Double?) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(label).font(ui(8.5, .semibold)).tracking(2).foregroundStyle(faint)
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                Text(value).font(editorial(23)).foregroundStyle(ink)
+                Text(unit).font(ui(9.5)).foregroundStyle(quiet)
+            }
+            .padding(.top, 2)
+            if let ratio {
+                ZStack(alignment: .leading) {
+                    Capsule().fill(oatmeal.opacity(0.55)).frame(width: 92, height: 3)
+                    Capsule().fill(terracotta).frame(width: max(0, min(92, 92 * ratio)), height: 3)
+                }
+                .padding(.top, 7)
+            }
+        }
+    }
+
+
+    // MARK: 右栏：安排
+
+    private var agendaRail: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center, spacing: 8) {
+                Text("今日安排").font(editorial(15, .semibold)).tracking(1.4)
+                Spacer()
+                Text("\(planDone) / \(planTotal)")
+                    .font(numeral(9)).foregroundStyle(faint)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .overlay(Capsule().stroke(oatmeal, lineWidth: 1))
+            }
+
+            ringRow.padding(.top, 10)
+
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 0) { agendaRows }
+                    .padding(.top, 8)
+            }
+            .frame(maxHeight: .infinity, alignment: .top)
+
+            addPlanButton.padding(.top, 8)
+            weekChart.padding(.top, 10)
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    private var ringRow: some View {
+        HStack(spacing: 14) {
+            ZStack {
+                Circle().stroke(oatmeal.opacity(0.55), lineWidth: 5)
+                Circle().trim(from: 0, to: max(planTotal == 0 ? 0.001 : 0.001, planRatio))
+                    .stroke(terracotta, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
+            .frame(width: 54, height: 54)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("节奏").font(ui(8.5, .semibold)).tracking(2).foregroundStyle(faint)
+                HStack(alignment: .firstTextBaseline, spacing: 1) {
+                    Text("\(planTotal == 0 ? 0 : Int((planRatio * 100).rounded()))").font(editorial(22))
+                    Text("%").font(ui(9)).foregroundStyle(quiet)
+                }
+                Text(planTotal == 0 ? "今天还没有安排" : "已完成 \(planDone) 项安排")
+                    .font(ui(9)).foregroundStyle(quiet)
+            }
+        }
+    }
+
+    @ViewBuilder private var agendaRows: some View {
+        if hub.todayPlans.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("今天还没有安排。").font(editorial(17))
+                Text("添加一件小事，到时间 MIRA 会提醒你。")
+                    .font(ui(10.5)).foregroundStyle(quiet).lineSpacing(3)
+                Button { editing = nil; adding = true } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "plus").font(.system(size: 8, weight: .bold))
+                        Text("添加一个安排")
+                    }
+                }
+                .buttonStyle(EditorialButtonStyle(kind: .outline))
+                .padding(.top, 6)
+            }
+            .padding(.vertical, 18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            ForEach(hub.todayPlans) { plan in planRow(plan) }
+        }
+    }
+
+    @ViewBuilder private func planRow(_ plan: Plan) -> some View {
+        let entry = hub.todayEntry(plan)
+        let done = entry?.done == true
+        let isDue = entry != nil && !done
+        HStack(alignment: .top, spacing: 9) {
+            Text(String(format: "%02d:%02d", plan.hour, plan.minute))
+                .font(numeral(10.5))
+                .foregroundStyle(done ? faint : (isDue ? terracotta : quiet))
+                .frame(width: 38, alignment: .leading)
+                .padding(.top, 2)
+            Circle()
+                .fill(done ? sage : (isDue ? terracotta : Color.clear))
+                .frame(width: 6, height: 6)
+                .overlay(Circle().stroke(done || isDue ? Color.clear : faint.opacity(0.7), lineWidth: 1))
+                .padding(.top, 5)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(plan.title)
+                    .font(editorial(13.5))
+                    .foregroundStyle(done ? faint : ink2)
+                    .strikethrough(done, color: faint)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                if done {
+                    Text("已完成").font(ui(9)).foregroundStyle(quiet)
+                } else if let e = entry {
+                    HStack(spacing: 6) {
+                        Button("完成") { hub.finish(e.id) }
+                            .buttonStyle(EditorialButtonStyle(kind: .ink))
+                        Button("延后") { hub.snooze(e.id) }
+                            .buttonStyle(EditorialButtonStyle(kind: .outline))
+                    }
+                    .padding(.top, 4)
+                } else if plan.origin != nil {
+                    Text("桌面同步 · 到时提醒").font(ui(9)).foregroundStyle(faint)
+                } else {
+                    Text("到时提醒").font(ui(9)).foregroundStyle(faint)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 7)
+        .padding(.horizontal, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(isDue ? paper : Color.clear)
+        )
+        .overlay {
+            if isDue {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(oatmeal.opacity(0.9), lineWidth: 1)
+            }
+        }
+    }
+
+    private var addPlanButton: some View {
+        VStack(spacing: 0) {
+            Rectangle().fill(oatmeal.opacity(0.8)).frame(height: 1)
+            Button { editing = nil; adding = true } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "plus").font(.system(size: 9, weight: .bold))
+                    Text("添加一个安排").font(ui(10.5, .medium))
+                    Spacer()
+                }
+                .foregroundStyle(terracotta)
+                .padding(.top, 9)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var weekChart: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("这一周").font(ui(8.5, .semibold)).tracking(2).foregroundStyle(faint)
+                Spacer()
+                Text("\(weekTotal) 件事").font(ui(9)).foregroundStyle(quiet)
+            }
+            HStack(alignment: .bottom, spacing: 4) {
+                ForEach(0..<7, id: \.self) { index in
+                    let count = weekCounts[index]
+                    let height = weekMax == 0 ? 4 : 4 + 20 * CGFloat(count) / CGFloat(weekMax)
+                    VStack(spacing: 5) {
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(index == 6 ? terracotta : Color(red: 0.788, green: 0.718, blue: 0.635))
+                            .frame(height: height)
+                        Text(weekLetters[index])
+                            .font(ui(8)).foregroundStyle(index == 6 ? terracotta : faint)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+            }
+            .frame(height: 40, alignment: .bottom)
+            .padding(.top, 9)
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(Color(red: 0.929, green: 0.894, blue: 0.839)))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .stroke(oatmeal.opacity(0.55), lineWidth: 1))
+    }
+
+    // MARK: 计划
+
+    private var plansPage: some View {
+        HStack(alignment: .top, spacing: 0) {
+            dateRail.frame(width: 148).padding(.trailing, 22)
+            columnLine
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("计划").font(editorial(30))
+                    Spacer()
+                    Button { editing = nil; adding = true } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "plus").font(.system(size: 9, weight: .bold))
+                            Text("新建计划")
+                        }
+                    }
+                    .buttonStyle(EditorialButtonStyle(kind: .ink))
+                }
+                Text("每天或每周重复 · 当天错过补发 · 完成后不再打扰")
+                    .font(ui(11)).foregroundStyle(quiet).padding(.top, 5)
+
+                ScrollView(showsIndicators: false) {
+                    LazyVStack(spacing: 10) { planCards }
+                        .padding(.top, 12)
+                        .padding(.bottom, 8)
+                }
+            }
+            .padding(.leading, 26).padding(.trailing, 24)
+            .frame(maxWidth: .infinity)
+            columnLine
+            VStack(alignment: .leading, spacing: 12) {
+                weekChart
+                desktopCard
+                Spacer(minLength: 0)
+            }
+            .frame(width: 262)
+            .padding(.leading, 24)
+        }
+        .padding(.horizontal, 44)
+        .padding(.top, 14)
+        .frame(maxHeight: .infinity)
+    }
+
+    private var desktopCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Circle().fill(hub.scheduleLoaded ? sage : faint).frame(width: 5, height: 5)
+                Text("桌面计划").font(editorial(13, .semibold))
+            }
+            Text(hub.scheduleStatus)
+                .font(ui(9)).foregroundStyle(quiet).lineSpacing(3).lineLimit(3)
+            Button("立即同步") { hub.syncSchedules(); hub.tick() }
+                .buttonStyle(EditorialButtonStyle(kind: .outline))
+            Text("读取本机 Codex automations；时间调整以来源应用为准。")
+                .font(ui(8.5)).foregroundStyle(faint).lineSpacing(3)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(paper))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .stroke(oatmeal.opacity(0.6), lineWidth: 1))
+    }
+
+    @ViewBuilder private var planCards: some View {
+        if hub.allPlans.isEmpty {
+            VStack(alignment: .leading, spacing: 9) {
+                Text("还没有个人计划。").font(editorial(20))
+                Text("从一件小事开始，比如晚饭后散步二十分钟。")
+                    .font(ui(11)).foregroundStyle(quiet)
+                Button("新建第一个计划") { editing = nil; adding = true }
+                    .buttonStyle(EditorialButtonStyle(kind: .ink))
+                    .padding(.top, 3)
+            }
+            .padding(.vertical, 36)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            ForEach(hub.allPlans) { plan in
+                PlanCard(hub: hub, plan: plan) {
+                    editing = plan
+                    adding = true
+                }
+            }
+        }
+    }
+
+    // MARK: 记录
+
+    private var historyPage: some View {
+        HStack(alignment: .top, spacing: 0) {
+            dateRail.frame(width: 148).padding(.trailing, 22)
+            columnLine
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("记录").font(editorial(30))
+                    Spacer()
+                    Text("每一步，都有迹可循。").font(ui(10)).foregroundStyle(faint)
+                }
+                ScrollView(showsIndicators: false) {
+                    LazyVStack(spacing: 0) { historyRows }
+                        .padding(.top, 10)
+                }
+            }
+            .padding(.leading, 26)
+            .frame(maxWidth: 930, alignment: .leading)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 44)
+        .padding(.top, 14)
+        .frame(maxHeight: .infinity)
+    }
+
+    @ViewBuilder private var historyRows: some View {
+        let items = hub.data.entries.filter { Schedule.inHistory($0, now: Date()) }
+        if items.isEmpty {
+            VStack(alignment: .leading, spacing: 9) {
+                Text("还没有历史记录。").font(editorial(20))
+                Text("本轮结束、已处理与已过期的提醒会保存在这里。")
+                    .font(ui(11)).foregroundStyle(quiet)
+            }
+            .padding(.vertical, 36)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            ForEach(items.prefix(60)) { entry in
+                HistoryRow(hub: hub, entry: entry)
+                Rectangle().fill(oatmeal.opacity(0.55)).frame(height: 1)
+            }
+        }
+    }
+
+    // MARK: 设置
+
+    private var settingsPage: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("连接与设置").font(editorial(30))
+                    Spacer()
+                    Text("本地优先 · 无服务器").font(ui(9.5)).foregroundStyle(faint)
+                }
+                settings.padding(.top, 18)
+            }
+            .padding(.horizontal, 44)
+            .padding(.top, 16)
+            .padding(.bottom, 20)
+            .frame(maxWidth: 1020, alignment: .leading)
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    // MARK: 日期与状态
+
+    private var now: Date { Date() }
+    private var dayString: String { String(Calendar.current.component(.day, from: now)) }
+    private var weekdayString: String {
+        let index = Calendar.current.component(.weekday, from: now) - 1
+        return ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"][max(0, min(6, index))]
+    }
+    private var monthString: String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "MMMM"
+        return formatter.string(from: now).uppercased()
+    }
+    private var dateLine: String {
+        let parts = Calendar.current.dateComponents([.year, .month, .day], from: now)
+        return String(format: "%02d — %02d — %d", parts.day ?? 1, parts.month ?? 1, parts.year ?? 2026)
+    }
+
+    private var connectionColor: Color {
+        if hub.data.lastEvent != nil { return sage }
+        return hub.installed || hub.dshInstalled ? Color(red: 0.75, green: 0.57, blue: 0.20) : faint
+    }
+    private var connectionText: String {
+        if hub.data.lastEvent != nil { return "已收到事件 · 本地记录" }
+        return hub.installed || hub.dshInstalled ? "已配置 · 等待第一条事件" : "尚未连接 · 本地可用"
+    }
+
+    private var greeting: String {
+        let hour = Calendar.current.component(.hour, from: now)
+        if hour < 5 { return "夜深了" }
+        if hour < 12 { return "早上好" }
+        if hour < 14 { return "中午好" }
+        if hour < 19 { return "下午好" }
+        return "晚上好"
+    }
+
+    private var greetingHeadline: String {
+        switch pendingCount {
+        case 0: return "\(greeting)，今天没有待回应的事。"
+        case 1: return "\(greeting)，先把一件事回完。"
+        default: return "\(greeting)，先把 \(pendingCount) 件事回完。"
+        }
+    }
+
+    private var kicker: String {
+        if pendingCount == 0 { return "ALL CLEAR · 今日已清空" }
+        if pendingCount == 1 { return "1 THING AWAITS YOUR REPLY" }
+        return "\(pendingCount) THINGS AWAIT YOUR REPLY"
+    }
+
+    private var lede: String {
+        guard let first = pending.first else {
+            return "AI 需要你的判断时，会把消息送到这里。右侧的安排会按时提醒，不急。"
+        }
+        let minutes = max(0, Int(now.timeIntervalSince(first.date) / 60))
+        let waited = minutes < 1 ? "刚刚抵达" : "已等待 \(minutes) 分钟"
+        var text = "最早一条来自 \(first.source)，\(waited)。"
+        if let approval = pending.first(where: { $0.token != nil }), let expires = approval.expires {
+            text += " 其中一次审批会在 \(expires.formatted(date: .omitted, time: .shortened)) 自动交还 DSH。"
+        }
+        return text
+    }
+
+    private var completedToday: [Entry] {
+        hub.data.entries
+            .filter { ($0.done || $0.automaticallyArchived) && Calendar.current.isDateInToday($0.date) }
+            .sorted { $0.date > $1.date }
+    }
+
+    private var planTotal: Int { hub.todayPlans.count }
+    private var planDone: Int {
+        hub.todayPlans.filter { hub.todayEntry($0)?.done == true }.count
+    }
+    private var planRatio: Double {
+        planTotal == 0 ? 0 : Double(planDone) / Double(planTotal)
+    }
+
+    private var weekDates: [Date] {
+        (0..<7).reversed().compactMap {
+            Calendar.current.date(byAdding: .day, value: -$0, to: now)
+        }
+    }
+    private var weekCounts: [Int] {
+        weekDates.map { day in
+            hub.data.entries.filter {
+                ($0.done || $0.automaticallyArchived) && Calendar.current.isDate($0.date, inSameDayAs: day)
+            }.count
+        }
+    }
+    private var weekTotal: Int { weekCounts.reduce(0, +) }
+    private var weekMax: Int { weekCounts.max() ?? 0 }
+    private var weekLetters: [String] {
+        weekDates.map { day in
+            let index = Calendar.current.component(.weekday, from: day) - 1
+            return ["日", "一", "二", "三", "四", "五", "六"][max(0, min(6, index))]
         }
     }
 }
 
-struct TrayView: View {
+// MARK: - 消息卡片
+
+struct EntryCard: View {
     @ObservedObject var hub: Hub
-    @State var tab = 0
+    let entry: Entry
+    var highlighted = false
+
     var body: some View {
-        VStack(spacing: 17) {
-            HStack { Text("MIRA").font(.custom("Georgia", size: 29)); Spacer(); Button { hub.go("设置") } label: { Image(systemName: "gearshape") }.buttonStyle(.plain).accessibilityLabel("连接与设置") }
-            HStack(spacing: 4) {
-                ForEach(0..<2) { index in
-                    Button { tab = index } label: {
-                        Text(index == 0 ? "待处理 \(hub.active.count)" : "今日计划")
-                            .font(.system(size: 13, weight: .medium)).frame(maxWidth: .infinity).padding(.vertical, 10)
-                            .foregroundStyle(tab == index ? Color.white : ink)
-                            .background(tab == index ? terracotta : Color.clear).clipShape(RoundedRectangle(cornerRadius: 8))
-                    }.buttonStyle(.plain)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 7) {
+                SourceGlyph(source: entry.source, inverted: highlighted)
+                Text(entry.source)
+                    .font(ui(10, .semibold))
+                    .foregroundStyle(highlighted ? warmPaperInk.opacity(0.82) : quiet)
+                if let detail = detail {
+                    Text(detail)
+                        .font(ui(9))
+                        .foregroundStyle(highlighted ? warmPaperInk.opacity(0.5) : faint)
                 }
-            }.padding(3).background(oatmeal).clipShape(RoundedRectangle(cornerRadius: 10))
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    if tab == 0 {
-                        if hub.active.isEmpty { Label("暂时没有待处理的事", systemImage: "checkmark.circle").font(.system(size: 13)).foregroundStyle(quiet).frame(maxWidth: .infinity).padding(.vertical, 38) }
-                        ForEach(hub.active) { TaskRow(hub: hub, entry: $0, compact: true) }
-                        if !hub.running.isEmpty { Text("正在进行 · \(hub.running.count)").font(.caption).foregroundStyle(quiet); ForEach(hub.running) { TaskRow(hub: hub, entry: $0, compact: true) } }
-                    } else {
-                        if hub.todayPlans.isEmpty { Text("今天还没有安排").font(editorial(20)).padding(.vertical, 25) }
-                        ForEach(hub.todayPlans) { p in
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text(String(format: "%02d:%02d", p.hour, p.minute)).font(.custom("Georgia", size: 24)).foregroundStyle(terracotta)
-                                Text(p.title).font(.system(size: 15, weight: .medium))
-                                if let e = hub.todayEntry(p) {
-                                    if e.done { Text("今天已完成").font(.caption).foregroundStyle(quiet) }
-                                    else { Button("完成") { hub.finish(e.id) }.buttonStyle(QuietButtonStyle()) }
-                                }
-                            }.padding(16).frame(maxWidth: .infinity, alignment: .leading).background(oatmeal.opacity(0.5)).clipShape(RoundedRectangle(cornerRadius: 10))
+                Spacer(minLength: 6)
+                StatusTag(text: entry.status, inverted: highlighted)
+                Text(entry.date.formatted(date: .omitted, time: .shortened))
+                    .font(numeral(9)).foregroundStyle(highlighted ? warmPaperInk.opacity(0.55) : faint)
+            }
+
+            Text(entry.displayTitle)
+                .font(editorial(19))
+                .lineSpacing(4)
+                .foregroundStyle(highlighted ? warmPaperInk : ink)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 8)
+
+            if !entry.body.isEmpty {
+                Text(entry.body)
+                    .font(ui(11))
+                    .lineSpacing(4)
+                    .foregroundStyle(highlighted ? warmPaperInk.opacity(0.66) : quiet)
+                    .lineLimit(2)
+                    .padding(.top, 5)
+            }
+
+            actions.padding(.top, 11)
+        }
+        .padding(.horizontal, 17)
+        .padding(.vertical, 13)
+        .background(cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .stroke(highlighted ? Color.clear : oatmeal.opacity(0.7), lineWidth: 1))
+        .shadow(color: highlighted ? terracotta.opacity(0.22) : Color.black.opacity(0.035),
+                radius: highlighted ? 16 : 5, x: 0, y: highlighted ? 9 : 2)
+    }
+
+    @ViewBuilder private var cardBackground: some View {
+        if highlighted { rustGradient } else { paper }
+    }
+
+    private var detail: String? {
+        guard let thread = entry.thread, !thread.isEmpty else { return nil }
+        return "会话 " + String(thread.prefix(10))
+    }
+
+    @ViewBuilder private var actions: some View {
+        HStack(spacing: 7) {
+            if entry.status == "待确认", entry.token != nil {
+                Button("允许一次") { hub.decide(entry, "allow") }
+                    .buttonStyle(EditorialButtonStyle(kind: highlighted ? .cream : .rust))
+                Button("拒绝") { hub.decide(entry, "deny") }
+                    .buttonStyle(EditorialButtonStyle(kind: highlighted ? .glass : .outline))
+                Button("去 DSH 处理") { hub.decide(entry, "defer") }
+                    .buttonStyle(EditorialButtonStyle(kind: highlighted ? .lightText : .text))
+            } else {
+                if !entry.link.isEmpty {
+                    Button { hub.open(entry) } label: {
+                        HStack(spacing: 4) {
+                            Text("打开原任务")
+                            Image(systemName: "arrow.up.right").font(.system(size: 8, weight: .semibold))
                         }
-                        Button("管理个人计划") { hub.go("计划") }.buttonStyle(QuietButtonStyle())
                     }
-                }.padding(2)
-            }.frame(height: 370)
-            Divider()
-            HStack {
-                Button { hub.go("今日") } label: { Label("查看全部任务", systemImage: "arrow.up.right") }.buttonStyle(.plain)
-                Spacer()
-                Button("退出") { NSApp.terminate(nil) }.buttonStyle(.plain).font(.caption).foregroundStyle(quiet)
-            }.font(.system(size: 13))
-        }.padding(20).frame(width: 400).background(paper).foregroundStyle(ink).preferredColorScheme(.light)
+                    .buttonStyle(EditorialButtonStyle(kind: .ink))
+                }
+                if entry.canSnooze {
+                    Button("10 分钟后") { hub.snooze(entry.id) }
+                        .buttonStyle(EditorialButtonStyle(kind: .outline))
+                }
+                if !entry.automaticallyArchived {
+                    Button(entry.source == "个人计划" ? "完成" : "标为已处理") { hub.finish(entry.id) }
+                        .buttonStyle(EditorialButtonStyle(kind: .text))
+                }
+            }
+            Spacer(minLength: 4)
+            hint
+        }
+    }
+
+    @ViewBuilder private var hint: some View {
+        if entry.status == "待确认", entry.token != nil, let expires = entry.expires {
+            CountdownHint(expires: expires, highlighted: highlighted)
+        } else {
+            Text(waitedText)
+                .font(numeral(9))
+                .foregroundStyle(highlighted ? warmPaperInk.opacity(0.5) : faint)
+        }
+    }
+
+    private var waitedText: String {
+        let minutes = max(0, Int(Date().timeIntervalSince(entry.date) / 60))
+        if minutes < 1 { return "刚刚" }
+        if minutes < 60 { return "已等待 \(minutes) 分钟" }
+        return "已等待 \(minutes / 60) 小时"
     }
 }
+
+struct CountdownHint: View {
+    let expires: Date
+    var highlighted = false
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let remaining = max(0, Int(expires.timeIntervalSince(context.date)))
+            HStack(spacing: 5) {
+                Image(systemName: "clock").font(.system(size: 8, weight: .medium))
+                Text(remaining > 0 ? "\(remaining) 秒后交还" : "正在交还 DSH")
+            }
+        }
+        .font(numeral(9))
+        .foregroundStyle(highlighted ? warmPaperInk.opacity(0.55) : faint)
+    }
+}
+
+struct RunningStrip: View {
+    @ObservedObject var hub: Hub
+    let entry: Entry
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Circle().fill(terracotta).frame(width: 6, height: 6)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.displayTitle)
+                    .font(editorial(14)).foregroundStyle(ink2).lineLimit(1)
+                Text("\(entry.source) · 已运行 \(elapsed) 分钟")
+                    .font(ui(9)).foregroundStyle(faint)
+            }
+            Spacer()
+            if !entry.link.isEmpty {
+                Button("打开") { hub.open(entry) }
+                    .buttonStyle(EditorialButtonStyle(kind: .text))
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 9)
+        .background(RoundedRectangle(cornerRadius: 11, style: .continuous)
+            .fill(paper.opacity(0.7)))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous)
+            .stroke(oatmeal.opacity(0.6), lineWidth: 1))
+    }
+
+    private var elapsed: Int {
+        max(0, Int(Date().timeIntervalSince(entry.date) / 60))
+    }
+}
+
+struct CompletedRow: View {
+    @ObservedObject var hub: Hub
+    let entry: Entry
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "checkmark")
+                .font(.system(size: 7, weight: .bold))
+                .foregroundStyle(sage)
+                .frame(width: 15, height: 15)
+                .background(Circle().fill(sageWash))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(entry.displayTitle)
+                    .font(editorial(13.5))
+                    .foregroundStyle(ink2)
+                    .lineLimit(1)
+                Text("\(entry.source) · \(entry.date.formatted(date: .omitted, time: .shortened)) · \(entry.historyStatus)")
+                    .font(ui(8.5))
+                    .foregroundStyle(faint)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 6)
+            if !entry.link.isEmpty {
+                Button("打开") { hub.open(entry) }
+                    .buttonStyle(EditorialButtonStyle(kind: .text))
+            }
+        }
+        .padding(.vertical, 8)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(oatmeal.opacity(0.4)).frame(height: 1)
+        }
+    }
+}
+
+// MARK: - 计划卡片
+
+struct PlanCard: View {
+    @ObservedObject var hub: Hub
+    let plan: Plan
+    var edit: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 18) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(String(format: "%02d:%02d", plan.hour, plan.minute))
+                    .font(numeral(22))
+                    .foregroundStyle(plan.enabled ? terracotta : faint)
+                Text(plan.origin == nil ? repeatText : "桌面同步")
+                    .font(ui(8, .semibold)).tracking(0.8).foregroundStyle(faint)
+            }
+            .frame(width: 74, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(plan.title)
+                    .font(editorial(18))
+                    .foregroundStyle(plan.enabled ? ink : faint)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !plan.notes.isEmpty {
+                    Text(plan.notes)
+                        .font(ui(10.5)).foregroundStyle(quiet).lineSpacing(3).lineLimit(2)
+                }
+                if let origin = plan.origin {
+                    Text(origin + " · 在来源应用调整时间或暂停")
+                        .font(ui(9)).foregroundStyle(faint)
+                } else if let entry = hub.todayEntry(plan) {
+                    Text(entry.done ? "今天已完成" : "今天已提醒")
+                        .font(ui(9)).foregroundStyle(entry.done ? sage : faint)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            VStack(alignment: .trailing, spacing: 8) {
+                if plan.origin == nil {
+                    Button { updateEnabled(!plan.enabled) } label: {
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(plan.enabled ? sage : faint)
+                                .frame(width: 5, height: 5)
+                            Text(plan.enabled ? "启用中" : "已暂停")
+                                .font(ui(9, .semibold)).tracking(0.4)
+                        }
+                        .foregroundStyle(plan.enabled ? sage : quiet)
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(Capsule().fill(plan.enabled ? sageWash : oatmeal.opacity(0.3)))
+                    }
+                    .buttonStyle(.plain)
+                    .help(plan.enabled ? "暂停这个计划" : "启用这个计划")
+                    HStack(spacing: 4) {
+                        Button("编辑", action: edit)
+                            .buttonStyle(EditorialButtonStyle(kind: .text))
+                        Button("删除") { deletePlan() }
+                            .buttonStyle(EditorialButtonStyle(kind: .text))
+                    }
+                } else {
+                    Text("来源管理").font(ui(9)).foregroundStyle(faint).padding(.top, 4)
+                }
+            }
+        }
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(paper))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+            .stroke(oatmeal.opacity(0.65), lineWidth: 1))
+    }
+
+    private var repeatText: String {
+        if plan.weekdays.isEmpty { return "每天" }
+        let names = ["", "日", "一", "二", "三", "四", "五", "六"]
+        return "每周 " + plan.weekdays.sorted().map { names[$0] }.joined(separator: " · ")
+    }
+
+    private func updateEnabled(_ value: Bool) {
+        if let index = hub.data.plans.firstIndex(where: { $0.id == plan.id }) {
+            hub.data.plans[index].enabled = value
+            _ = hub.save()
+            hub.tick()
+        }
+    }
+
+    private func deletePlan() {
+        hub.data.plans.removeAll { $0.id == plan.id }
+        hub.data.entries.removeAll { $0.id.hasPrefix("plan-\(plan.id)-") && !$0.done }
+        _ = hub.save()
+    }
+}
+
+// MARK: - 记录行
+
+struct HistoryRow: View {
+    @ObservedObject var hub: Hub
+    let entry: Entry
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(entry.date.formatted(.dateTime.month(.twoDigits).day(.twoDigits)))
+                    .font(numeral(10.5)).foregroundStyle(quiet)
+                Text(entry.date.formatted(date: .omitted, time: .shortened))
+                    .font(numeral(8.5)).foregroundStyle(faint)
+            }
+            .frame(width: 52, alignment: .leading)
+            .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 7) {
+                    SourceGlyph(source: entry.source)
+                    Text(entry.source).font(ui(9.5, .semibold)).foregroundStyle(quiet)
+                    StatusTag(text: entry.historyStatus)
+                }
+                Text(entry.displayTitle)
+                    .font(editorial(15.5)).foregroundStyle(ink2)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !entry.body.isEmpty {
+                    Text(entry.body).font(ui(10)).foregroundStyle(quiet).lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            if !entry.link.isEmpty {
+                Button { hub.open(entry) } label: {
+                    HStack(spacing: 3) {
+                        Text("打开")
+                        Image(systemName: "arrow.up.right").font(.system(size: 8, weight: .semibold))
+                    }
+                }
+                .buttonStyle(EditorialButtonStyle(kind: .text))
+                .padding(.top, 2)
+            }
+        }
+        .padding(.vertical, 12)
+    }
+}
+
+// MARK: - 提醒弹窗
 
 struct ReminderView: View {
     @ObservedObject var hub: Hub
     let entry: Entry
     let dismiss: () -> Void
+
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            Text("M").font(.custom("Georgia", size: 22)).foregroundStyle(.white)
-                .frame(width: 38, height: 38).background(terracotta).clipShape(RoundedRectangle(cornerRadius: 9))
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .top, spacing: 12) {
-                    Text(entry.displayTitle).font(.system(size: 16, weight: .semibold)).lineLimit(3).fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 0)
-                    Button(action: {
-                        if let decision = ReminderClose.decision(for: entry) { _ = hub.decide(entry, decision) }
-                        dismiss()
-                    }) { Image(systemName: "xmark").font(.system(size: 12, weight: .medium)) }
-                        .buttonStyle(.plain).foregroundStyle(quiet).accessibilityLabel("关闭提醒")
-                        .help(entry.token != nil ? "关闭提醒，交还 DSH 原生对话框" : "关闭提醒，保留任务记录")
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 10) {
+                Text("M")
+                    .font(numeral(13, .semibold))
+                    .foregroundStyle(warmPaperInk)
+                    .frame(width: 26, height: 26)
+                    .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(terracotta))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(entry.source).font(ui(9, .semibold)).tracking(1).foregroundStyle(faint)
+                    StatusTag(text: entry.status)
                 }
-                StatusLabel(text: entry.status)
-                Text(entry.body.isEmpty ? entry.status : entry.body).font(.system(size: 13)).foregroundStyle(quiet).lineLimit(3).fixedSize(horizontal: false, vertical: true)
-                if entry.token != nil, entry.status == "待确认" {
-                    HStack(spacing: 8) {
-                        Button("允许一次") { if hub.decide(entry, "allow") { dismiss() } }.buttonStyle(MiraPrimaryButtonStyle())
-                        Button("拒绝") { if hub.decide(entry, "deny") { dismiss() } }.buttonStyle(QuietButtonStyle())
-                        Button("去 DSH 处理") { if hub.decide(entry, "defer") { dismiss() } }.buttonStyle(QuietButtonStyle())
-                        Spacer(minLength: 0)
-                    }.padding(.top, 7)
-                } else {
-                    HStack(spacing: 10) {
-                        if entry.canSnooze {
-                            Button("10 分钟后") { hub.snooze(entry.id); dismiss() }.buttonStyle(QuietButtonStyle())
-                        } else if !entry.automaticallyArchived && hub.data.entries.contains(where: { $0.id == entry.id && !$0.done }) {
-                            Button("标为已处理") {
-                                if hub.finish(entry.id) { dismiss() }
-                                else { hub.showMain?(); dismiss() }
-                            }.buttonStyle(QuietButtonStyle())
-                        }
-                        Spacer(minLength: 0)
-                        Button { hub.open(entry); dismiss() } label: { Label(entry.link.isEmpty ? "查看任务中心" : "打开原任务", systemImage: "arrow.up.right") }.buttonStyle(MiraPrimaryButtonStyle())
-                    }.padding(.top, 7)
+                Spacer()
+                Button(action: close) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(quiet)
+                        .frame(width: 22, height: 22)
+                        .background(Circle().fill(oatmeal.opacity(0.4)))
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("关闭提醒")
+                .help(entry.token != nil ? "关闭提醒，交还 DSH 原生对话框" : "关闭提醒，保留任务记录")
             }
-        }.padding(22).frame(width: 470, alignment: .leading).background(paper).foregroundStyle(ink)
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .overlay(RoundedRectangle(cornerRadius: 16).stroke(oatmeal, lineWidth: 1)).preferredColorScheme(.light)
+
+            Text(entry.displayTitle)
+                .font(editorial(18))
+                .lineSpacing(4)
+                .foregroundStyle(ink)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 11)
+
+            if !entry.body.isEmpty {
+                Text(entry.body)
+                    .font(ui(11)).foregroundStyle(quiet).lineSpacing(4)
+                    .lineLimit(3)
+                    .padding(.top, 5)
+            }
+
+            actions.padding(.top, 14)
+
+            if entry.token != nil, entry.status == "待确认" {
+                Text("只对这一次请求生效；超时或关闭会交还 DSH 原生对话框。")
+                    .font(ui(9)).foregroundStyle(faint)
+                    .padding(.top, 9)
+            }
+        }
+        .padding(20)
+        .frame(width: 470, alignment: .leading)
+        .background(paper)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
+            .stroke(oatmeal, lineWidth: 1))
+        .foregroundStyle(ink)
+        .preferredColorScheme(.light)
+    }
+
+    @ViewBuilder private var actions: some View {
+        HStack(spacing: 8) {
+            if entry.token != nil, entry.status == "待确认" {
+                Button("允许一次") { if hub.decide(entry, "allow") { dismiss() } }
+                    .buttonStyle(EditorialButtonStyle(kind: .rust))
+                Button("拒绝") { if hub.decide(entry, "deny") { dismiss() } }
+                    .buttonStyle(EditorialButtonStyle(kind: .outline))
+                Button("去 DSH 处理") { if hub.decide(entry, "defer") { dismiss() } }
+                    .buttonStyle(EditorialButtonStyle(kind: .text))
+                Spacer(minLength: 0)
+                Button { hub.open(entry); dismiss() } label: {
+                    HStack(spacing: 4) {
+                        Text(entry.link.isEmpty ? "任务中心" : "打开")
+                        Image(systemName: "arrow.up.right").font(.system(size: 8, weight: .semibold))
+                    }
+                }
+                .buttonStyle(EditorialButtonStyle(kind: .text))
+            } else {
+                if entry.canSnooze {
+                    Button("10 分钟后") { hub.snooze(entry.id); dismiss() }
+                        .buttonStyle(EditorialButtonStyle(kind: .outline))
+                } else if !entry.automaticallyArchived && hub.data.entries.contains(where: { $0.id == entry.id && !$0.done }) {
+                    Button("标为已处理") {
+                        if hub.finish(entry.id) { dismiss() } else { hub.showMain?(); dismiss() }
+                    }
+                    .buttonStyle(EditorialButtonStyle(kind: .outline))
+                }
+                Spacer(minLength: 0)
+                Button { hub.open(entry); dismiss() } label: {
+                    HStack(spacing: 4) {
+                        Text(entry.link.isEmpty ? "查看任务中心" : "打开原任务")
+                        Image(systemName: "arrow.up.right").font(.system(size: 8, weight: .semibold))
+                    }
+                }
+                .buttonStyle(EditorialButtonStyle(kind: .ink))
+            }
+        }
+    }
+
+    private func close() {
+        if let decision = ReminderClose.decision(for: entry) { _ = hub.decide(entry, decision) }
+        dismiss()
     }
 }
