@@ -16,6 +16,7 @@ import {
   projectName,
   questionEntryId,
   reasonInfo,
+  summarize,
   writeEntry,
 } from "../integrations/dsh/entry.js";
 import { apply } from "../integrations/dsh/index.js";
@@ -390,4 +391,55 @@ test("approval reminders inherit the current round", () => {
   const [file] = readdirSync(join(root, "inbox"));
   const entry = JSON.parse(readFileSync(join(root, "inbox", file), "utf8"));
   assert.equal(entry.title, "MIRA · 第 3 轮");
+});
+
+function sessionWithEvents(events) {
+  return {
+    id: "session-1234-abcd",
+    header: { cwd: "/Users/yunye/MIRA" },
+    seq: events.length,
+    eventAt: (index) => events[index],
+  };
+}
+
+test("uses the first user message as the task name when no title exists", () => {
+  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
+  const handlers = new Map();
+  apply(
+    { on: (event, handler) => handlers.set(event, handler), logger: { warn: () => {} } },
+    { dataDir: root },
+  );
+  const session = sessionWithEvents([
+    { type: "user/message", data: { source: { kind: "runtime-context" }, content: [{ type: "text", text: "Current runtime context." }] } },
+    { type: "user/message", data: { source: { kind: "user" }, content: [{ type: "text", text: "我想做一个软件，就是说如果我的 codex 任务完成了，或者需要我确定了" }] } },
+  ]);
+  handlers.get("session/event")(session, {
+    type: "turn/end",
+    time: TIME,
+    data: { turn: 1, reason: { kind: "completed" } },
+  });
+  const [file] = readdirSync(join(root, "inbox"));
+  const entry = JSON.parse(readFileSync(join(root, "inbox", file), "utf8"));
+  assert.equal(entry.title, summarize("我想做一个软件，就是说如果我的 codex 任务完成了，或者需要我确定了"));
+  assert.ok(entry.title.endsWith("…"), "long prompt is truncated");
+});
+
+test("synthetic context messages are not used as task names", () => {
+  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
+  const handlers = new Map();
+  apply(
+    { on: (event, handler) => handlers.set(event, handler), logger: { warn: () => {} } },
+    { dataDir: root },
+  );
+  const session = sessionWithEvents([
+    { type: "user/message", data: { source: { kind: "runtime-context" }, content: [{ type: "text", text: "Current runtime context." }] } },
+  ]);
+  handlers.get("session/event")(session, {
+    type: "turn/end",
+    time: TIME,
+    data: { turn: 2, reason: { kind: "completed" } },
+  });
+  const [file] = readdirSync(join(root, "inbox"));
+  const entry = JSON.parse(readFileSync(join(root, "inbox", file), "utf8"));
+  assert.equal(entry.title, "MIRA · 第 2 轮");
 });

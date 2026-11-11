@@ -64,6 +64,12 @@ function displayTitle(title, sessionId, cwd, turn) {
   return (named || fallback).slice(0, 80);
 }
 
+/** Short, readable task summary used when no session title exists yet. */
+export function summarize(text, limit = 32) {
+  const line = String(text ?? "").replace(/\s+/g, " ").trim();
+  return line.length > limit ? line.slice(0, limit) + "…" : line;
+}
+
 function oneLine(value, limit = 120) {
   const text = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
   return text.length > limit ? text.slice(0, limit - 1) + "…" : text;

@@ -10,6 +10,7 @@ import {
   buildQuestionEntry,
   isSubagent,
   questionEntryId,
+  summarize,
   writeEntry,
 } from "./entry.js";
 
@@ -46,6 +47,19 @@ export function apply(ctx, config) {
     return skipSubagents && isSubagent(session);
   }
 
+  function firstPrompt(session) {
+    if (typeof session.eventAt !== "function" || !Number.isSafeInteger(session.seq)) return undefined;
+    const limit = Math.min(session.seq, 5000);
+    for (let seq = 0; seq < limit; seq += 1) {
+      const event = session.eventAt(seq);
+      if (event?.type !== "user/message" || event.data?.source?.kind !== "user") continue;
+      const blocks = Array.isArray(event.data.content) ? event.data.content : [];
+      const text = blocks.filter((block) => block?.type === "text").map((block) => block.text ?? "").join(" ");
+      if (text.trim()) return text;
+    }
+    return undefined;
+  }
+
   function titleOf(session) {
     const cached = titles.get(session.id);
     if (cached) return cached;
@@ -62,6 +76,18 @@ export function apply(ctx, config) {
       }
     } catch (error) {
       ctx.logger?.warn?.(`mira-bridge: title lookup failed: ${error?.message ?? error}`);
+    }
+    // Titles are generated asynchronously; before that, the first user message
+    // is the best human-readable name for the task.
+    try {
+      const prompt = firstPrompt(session);
+      const summary = prompt ? summarize(prompt) : "";
+      if (summary) {
+        titles.set(session.id, summary);
+        return summary;
+      }
+    } catch (error) {
+      ctx.logger?.warn?.(`mira-bridge: prompt summary failed: ${error?.message ?? error}`);
     }
     return undefined;
   }
