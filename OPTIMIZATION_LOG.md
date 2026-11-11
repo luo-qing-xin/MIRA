@@ -277,7 +277,7 @@ swiftc -module-cache-path /tmp/mira-swift-cache Sources/Core.swift Sources/Sched
 - Git：`4791858`（交接基线）→ `f5cc9a7`（R9）→ `b54d344`（R10）→ `d0e65af`（R11）→ `a55b5cc`（R12）→ `d32bfc6`（R13）→ `1aba0a4`（R14）→ `ff10f57`（R15）；本日志的更新单独提交。
 - 构建：`bash scripts/build.sh` 成功（ad-hoc 签名）；`otool` 显示 `minos 13.0`；`codesign --verify --deep --strict` 通过；`Contents/Resources` 的 `receive.py` / `index.js` / `entry.js` 与仓库源文件 sha1 一致。
 - 测试：Python 17 项（接收器 11 + 脚本安全 6）；Node 29 项；Swift 核心断言（含通知回滚、审批关闭、收件箱错误/重建、链接与 DSH 安装）；Swift 计划断言（含部分快照、暂停、不可读文件）。全部通过。
-- 运行：旧实例 PID 64408 已退出；新构建 PID 72657 运行；`heartbeat` 连续在 3 秒内更新，`state.json` 可正常解析（0 个本地计划、48 条记录、47 个去重键，未迁移/未清理）。
+- 运行：旧实例 PID 64408 已退出；最终构建 PID 73201 运行；`heartbeat` 在重启后 2.8 秒内更新，`state.json` 可正常解析（0 个本地计划、48 条记录、47 个去重键，未迁移/未清理）。
 - 数据兼容：`Plan.origin` 只新增可选字段；`Entry` 只新增计算属性，`state.json` / 收件箱 JSON 字段未增删；旧的 `hooks.json` 与 DSH 补丁格式继续兼容。
 - 未做/跳过：
   - 桌面计划改到更晚时间时的「先过期再恢复」：既有测试明确断言，属产品取舍，未改。
