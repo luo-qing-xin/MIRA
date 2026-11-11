@@ -9,6 +9,15 @@
 
 可运行的 macOS 菜单栏初版，使用 SwiftUI / AppKit，无服务器、无 API Key、无第三方运行依赖。适用于 macOS 13+；当前构建针对本机 Apple Silicon。Windows 尚未实现。
 
+## 桌面定时计划接入
+
+- 启动时和每 30 秒只读同步 `$CODEX_HOME/automations/*/automation.toml`（默认 `~/.codex/automations`），「计划」和设置页可手动同步。已验证本机「每周回顾 · 周五 16:00」。这是本机文件适配，依赖客户端保存格式，不是 ChatGPT 云端 Tasks API。
+- 支持每天、每周指定星期的单个固定时刻，采用电脑当前时区。月度、间隔多周、小时循环等尚不支持，会明确显示解析问题，不猜测提醒时间。
+- 电脑运行 MIRA 时到点提醒；启动／唤醒后补发当天错过的提醒。同一计划每天只生成一条，完成后重启不重复；未完成保留至当天结束，此后仅在记录中显示，不补弹前几天的事项。
+- 同步计划在来源应用修改。暂停／删除会撤下当天未完成提醒；调整时间会更新当天未完成事项。完成仅记录在 MIRA，不会取消源自动化或标记 AI 执行成功。读取失败时保留已有记录并显示原因。
+- 本版提醒的是**计划到点**，不是确认源任务已执行。源任务执行结果继续由现有 Codex hooks 通知。未取得可验证的计划专用深链时打开 MIRA 任务中心。
+- **ChatGPT 网页／手机端 Tasks 尚未自动接入**。MIRA 本地计划仍可填写 ChatGPT 对话链接；这不等于云端同步。登录自动启动需要在 MIRA 设置中启用。
+
 ## DSH（DeepSeek Harness）连接
 
 - 接入方式：在 MIRA 的「连接与设置」点「配置 DSH 连接」，或运行 `bash scripts/install-dsh-bridge.sh`；两者做同一件事——把桥接插件复制到 DSH 桌面 profile 的 `plugins/mira-bridge/`，再往 `cordis.patch.yml` 追加一行 `mira-bridge`。改动前会备份原补丁，其他配置保持不动。
@@ -28,7 +37,7 @@
 1. 在「连接与设置」点「测试弹窗」。系统通知未授权时显示 MIRA 自己的浮动提醒；授权后使用系统通知，避免重复弹窗。
 2. 新建计划，时间设为今天已经过去的时间。保存后应立即补发；点「完成」后重启应用，不应再出现。
 3. 新建未来一分钟的计划。退出应用，等过了该时间再启动，当天应补提醒。跨天不追发旧计划。
-4. 待确认、待补充信息与个人计划可以选择「10 分钟后」。Codex / DSH 的轮次结束和中断通知可以选择「标为已处理」，进入历史记录；直接关闭提醒会保留在待处理列表。
+4. 待确认、待补充信息与个人计划可以选择「10 分钟后」。Codex / DSH 的「本轮结束」通知自动进入记录，不计入待处理，也没有「标为已处理」按钮；仍通知一次并可打开原任务。中断等其他状态仍可手动标记处理。关闭待确认或个人计划弹窗会保留待处理事项。
 5. 「连接与设置」→「配置本机连接」。原有 hooks 会保留并备份。然后在 Codex 的 hooks 审核界面审查并信任接收器，启动新会话。CLI 可用 `/hooks` 进行审核。不要绕过 hook 信任。
 6. 在新的本地 Codex 会话中完成一轮真实任务。MIRA 应收到「本轮结束」，点击进入原会话。权限请求需用你实际需要审批的任务验收，MIRA 不会自动批准。
 7. 在设置启用「登录电脑时启动 MIRA」。macOS 可能要求在系统设置的登录项中允许；以系统最终状态为准。注册前请把 app 放在固定位置。
@@ -44,7 +53,7 @@
 - `codex://threads/<session_id>` 在当前安装客户端资源中可确认；是客户端依赖的跳转路径，后续客户端版本可能变化。提供复制标识兜底。
 - DSH 走桌面 profile 的第三方插件：把 `turn/end` 的 reason 映射成本轮结束、任务失败、已中断、已拦截、已达上限；审批在 MIRA 存活且有心跳时由弹窗代答（一次性 token、60 秒过期），否则直接回落到 DSH 原生对话框。不修改会话内容。
 - DSH 的深链目前只有 `dsh://open`（聚焦主窗口）；弹窗保留会话标题和短标识作为定位兜底。插件只挂载在桌面 profile，`dsh web` / `headless` 不生效。
-- 本地用户层 hooks 不能监控个人账号已有云端任务、普通 ChatGPT 对话，也不会同步 ChatGPT 定时任务。个人计划在 MIRA 本地维护，可粘贴对话链接。
+- 本地用户层 hooks 不能监控个人账号已有云端任务或普通 ChatGPT 对话。桌面计划通过独立文件适配器同步，ChatGPT 云端 Tasks 尚未连接；也可在 MIRA 新建个人计划并粘贴对话链接。
 - **配置成功不等于已连通。** 界面直到收到真实 hook 文件才显示最近事件时间。信任审核必须由用户在 Codex 中完成；应用不修改信任记录。
 - 事件名称优先使用本地 Codex 元数据中对应会话的可见名称（`name`），兼容旧格式短标题；不可用时回退为项目名与会话短标识。只读查询匹配的会话，不读完整对话、浏览器 Cookie、凭据或完整命令。此适配依赖客户端内部 SQLite 格式，后续版本可能变化。
 
@@ -64,6 +73,8 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 node --test tests/test_dsh_bridge.mjs
 swiftc -module-cache-path /tmp/mira-swift-cache Sources/Core.swift tests/CoreTests.swift -o /tmp/mira-core-tests
 /tmp/mira-core-tests
+swiftc -module-cache-path /tmp/mira-swift-cache Sources/Core.swift Sources/ScheduledTasks.swift tests/ScheduledTasksTests.swift -o /tmp/mira-schedules-tests
+/tmp/mira-schedules-tests
 open dist/MIRA.app
 ```
 

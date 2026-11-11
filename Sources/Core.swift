@@ -10,6 +10,7 @@ struct Plan: Codable, Identifiable {
     var link: String
     var enabled = true
     var created = Date()
+    var origin: String? = nil
 }
 struct Entry: Codable, Identifiable {
     var id: String
@@ -28,6 +29,11 @@ struct Entry: Codable, Identifiable {
     var dismiss: String? = nil
     // One-shot approval token: only present when MIRA may answer this request.
     var token: String? = nil
+
+    // Informational completion notices still notify once, but never require
+    // acknowledgement. Keep this separate from `done` and `notified`.
+    var automaticallyArchived: Bool { status == "本轮结束" }
+    var historyStatus: String { automaticallyArchived ? status : (done ? "已处理" : "已过期") }
 
     var canSnooze: Bool {
         status == "待确认" || status == "待补充信息" || status == "待完成"
@@ -65,16 +71,25 @@ enum PlanTime {
 }
 
 enum Schedule {
+    static func occurrenceID(_ plan: Plan, now: Date, calendar: Calendar = .current) -> String {
+        let parts = calendar.dateComponents([.year, .month, .day], from: now)
+        return "plan-\(plan.id)-\(parts.year!)-\(parts.month!)-\(parts.day!)"
+    }
     static func due(_ plan: Plan, now: Date, calendar: Calendar = .current) -> Entry? {
         guard plan.enabled, plan.weekdays.isEmpty || plan.weekdays.contains(calendar.component(.weekday, from: now)) else { return nil }
         let start = calendar.startOfDay(for: now)
         guard let time = calendar.date(bySettingHour: plan.hour, minute: plan.minute, second: 0, of: start), time <= now,
               let end = calendar.date(byAdding: .day, value: 1, to: start) else { return nil }
-        let parts = calendar.dateComponents([.year, .month, .day], from: now)
-        let key = "plan-\(plan.id)-\(parts.year!)-\(parts.month!)-\(parts.day!)"
+        let key = occurrenceID(plan, now: now, calendar: calendar)
         return Entry(id: key, title: plan.title, body: plan.notes, source: "个人计划", status: "待完成", link: plan.link, date: time, expires: end)
     }
     static func active(_ e: Entry, now: Date) -> Bool { !e.done && (e.expires == nil || e.expires! > now) }
+    static func needsAttention(_ e: Entry, now: Date) -> Bool {
+        active(e, now: now) && e.status != "运行中" && !e.automaticallyArchived
+    }
+    static func inHistory(_ e: Entry, now: Date) -> Bool {
+        e.automaticallyArchived || !active(e, now: now)
+    }
 }
 enum Decisions {
     static let choices: Set<String> = ["allow", "deny", "defer"]

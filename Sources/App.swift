@@ -38,6 +38,29 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
     let decoder = JSONDecoder()
     var timer: Timer?
     var storageReady = true
+    @Published var desktopPlans: [Plan] = []
+    @Published var scheduleStatus = "等待同步桌面定时任务"
+    var lastScheduleSync = Date.distantPast
+    var scheduleSnapshotComplete = false
+
+    var allPlans: [Plan] { data.plans + desktopPlans }
+
+    func syncSchedules() {
+        let base = ProcessInfo.processInfo.environment["CODEX_HOME"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
+        do {
+            let snapshot = try DesktopSchedules.load(directory: base.appendingPathComponent("automations"))
+            desktopPlans = snapshot.plans
+            scheduleSnapshotComplete = snapshot.issues.isEmpty
+            scheduleStatus = "已同步 \(snapshot.plans.count) 项桌面计划 · " + Date().formatted(date: .omitted, time: .shortened)
+            if !snapshot.issues.isEmpty { scheduleStatus += "\n" + snapshot.issues.joined(separator: "\n") }
+        } catch {
+            desktopPlans = []
+            scheduleSnapshotComplete = false
+            scheduleStatus = "桌面计划读取失败：\(error.localizedDescription)"
+        }
+        lastScheduleSync = Date()
+    }
     /// Set when a state write failed; retried on the next tick even without new events.
     var savePending = false
     var showPopup: ((Entry) -> Void)?
@@ -142,11 +165,14 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
         writeHeartbeat()
         guard storageReady else { return }
         let now = Date()
+        if now.timeIntervalSince(lastScheduleSync) >= 30 { syncSchedules() }
         let inbox = root.appendingPathComponent("inbox")
         let drained = Inbox.drain(inbox: inbox, data: &data, now: now, decoder: decoder)
         if !drained.errors.isEmpty { error = drained.errors[drained.errors.count - 1] }
         var changed = drained.changed
-        for plan in data.plans {
+        let revised = scheduleSnapshotComplete ? DesktopSchedules.reconcile(&data.entries, plans: desktopPlans, now: now) : []
+        changed = changed || !revised.isEmpty
+        for plan in allPlans {
             if let entry = Schedule.due(plan, now: now), !data.entries.contains(where: { $0.id == entry.id }) {
                 data.entries.insert(entry, at: 0); changed = true
             }
@@ -163,7 +189,7 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
         // savePending also retries writes that failed outside the inbox path.
         if !drained.consumed.isEmpty || changed || savePending, !save() { return }
         for url in drained.consumed { try? FileManager.default.removeItem(at: url) }
-        for target in drained.dismissed {
+        for target in drained.dismissed + revised {
             closePopup?(target)
             UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [target])
         }
@@ -184,7 +210,7 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
             showPopup?(entry)
         }
     }
-    var active: [Entry] { data.entries.filter { Schedule.active($0, now: Date()) && $0.status != "运行中" }.sorted { a, b in a.status == "待确认" && b.status != "待确认" } }
+    var active: [Entry] { data.entries.filter { Schedule.needsAttention($0, now: Date()) }.sorted { a, b in a.status == "待确认" && b.status != "待确认" } }
     func notify(_ e: Entry, popup: Bool = true) {
         let content = UNMutableNotificationContent()
         content.title = e.status == "待确认" ? "需要你确认 · \(e.title)" : e.title

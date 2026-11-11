@@ -27,7 +27,7 @@ struct StatusLabel: View {
 extension Hub {
     var todayPlans: [Plan] {
         let day = Calendar.current.component(.weekday, from: Date())
-        return data.plans.filter { $0.enabled && ($0.weekdays.isEmpty || $0.weekdays.contains(day)) }
+        return allPlans.filter { $0.enabled && ($0.weekdays.isEmpty || $0.weekdays.contains(day)) }
             .sorted { ($0.hour, $0.minute) < ($1.hour, $1.minute) }
     }
     var running: [Entry] { data.entries.filter { !$0.done && $0.status == "运行中" } }
@@ -49,7 +49,7 @@ struct TaskRow: View {
                 Label(entry.source, systemImage: entry.source == "个人计划" ? "calendar" : "cube")
                     .font(.system(size: 12)).foregroundStyle(quiet)
                 Spacer()
-                StatusLabel(text: history ? (entry.done ? "已处理" : "已过期") : entry.status)
+                StatusLabel(text: history ? entry.historyStatus : entry.status)
             }
             Text(entry.title).font(compact ? .system(size: 16, weight: .semibold) : editorial(24))
                 .foregroundStyle(ink).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
@@ -91,8 +91,10 @@ struct TaskRow: View {
                             Button("10 分钟后") { hub.snooze(entry.id) }.buttonStyle(QuietButtonStyle())
                         }
                         Spacer()
-                        Button(entry.source == "个人计划" ? "完成" : "标为已处理") { hub.finish(entry.id) }
-                            .buttonStyle(QuietButtonStyle())
+                        if !entry.automaticallyArchived {
+                            Button(entry.source == "个人计划" ? "完成" : "标为已处理") { hub.finish(entry.id) }
+                                .buttonStyle(QuietButtonStyle())
+                        }
                     }
                 }
             }
@@ -208,7 +210,9 @@ struct HubView: View {
                     HStack { Button("完成") { hub.finish(entry.id) }.buttonStyle(MiraPrimaryButtonStyle()); Button("10 分钟后") { hub.snooze(entry.id) }.buttonStyle(QuietButtonStyle()) }
                 }
             } else { Text("到时提醒 · 当天补发").font(.system(size: 11)).foregroundStyle(quiet) }
-            Button("编辑计划") { editing = p; adding = true }.buttonStyle(.plain).foregroundStyle(terracotta).font(.system(size: 11))
+            if p.origin == nil {
+                Button("编辑计划") { editing = p; adding = true }.buttonStyle(.plain).foregroundStyle(terracotta).font(.system(size: 11))
+            } else { Text(p.origin ?? "").font(.caption).foregroundStyle(quiet) }
             Divider().padding(.top, 6)
         }
     }
@@ -223,26 +227,29 @@ struct HubView: View {
         VStack(alignment: .leading, spacing: 22) {
             HStack { Text("把时间，留给重要的事。").font(editorial(34)); Spacer(); Button("＋ 新建计划") { editing = nil; adding = true }.buttonStyle(MiraPrimaryButtonStyle()) }
             Text("每天或每周重复 · 当天错过补发 · 完成后不再打扰").font(.system(size: 12)).foregroundStyle(quiet)
-            if hub.data.plans.isEmpty { empty("还没有个人计划", "从一个小小的日常开始。", "calendar") }
-            ForEach(hub.data.plans) { p in
+            HStack { Text(hub.scheduleStatus).font(.caption).foregroundStyle(quiet); Spacer(); Button("同步桌面计划") { hub.syncSchedules(); hub.tick() }.buttonStyle(QuietButtonStyle()) }
+            if hub.allPlans.isEmpty { empty("还没有个人计划", "从一个小小的日常开始。", "calendar") }
+            ForEach(hub.allPlans) { p in
                 HStack(alignment: .top, spacing: 25) {
                     Text(String(format: "%02d:%02d", p.hour, p.minute)).font(.custom("Georgia", size: 32)).foregroundStyle(terracotta).frame(width: 100, alignment: .leading)
                     VStack(alignment: .leading, spacing: 10) {
                         Text(p.title).font(editorial(24))
                         Text(p.weekdays.isEmpty ? "每天" : "每周 " + p.weekdays.sorted().map { ["", "日", "一", "二", "三", "四", "五", "六"][$0] }.joined(separator: " · ")).font(.caption).foregroundStyle(quiet)
                         if !p.notes.isEmpty { Text(p.notes).font(.system(size: 13)).foregroundStyle(quiet).lineSpacing(4) }
-                        HStack {
+                        if let origin = p.origin {
+                            Text(origin + " · 在来源应用调整时间或暂停").font(.caption).foregroundStyle(quiet)
+                        } else { HStack {
                             Button("编辑") { editing = p; adding = true }.buttonStyle(QuietButtonStyle())
                             Button("删除", role: .destructive) {
                                 hub.data.plans.removeAll { $0.id == p.id }
                                 hub.data.entries.removeAll { $0.id.hasPrefix("plan-\(p.id)-") && !$0.done }; _ = hub.save()
                             }.buttonStyle(.plain).font(.caption).foregroundStyle(quiet)
-                        }
+                        } }
                     }
                     Spacer()
-                    Toggle("启用", isOn: Binding(get: { p.enabled }, set: { value in
+                    if p.origin == nil { Toggle("启用", isOn: Binding(get: { p.enabled }, set: { value in
                         if let i = hub.data.plans.firstIndex(where: { $0.id == p.id }) { hub.data.plans[i].enabled = value; _ = hub.save(); hub.tick() }
-                    })).toggleStyle(.switch).fixedSize()
+                    })).toggleStyle(.switch).fixedSize() }
                 }.padding(24).frame(maxWidth: .infinity, alignment: .leading).background(oatmeal.opacity(0.45)).clipShape(RoundedRectangle(cornerRadius: 10))
             }
         }
@@ -250,8 +257,8 @@ struct HubView: View {
     var history: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("每一步，都有迹可循。").font(editorial(34))
-            let items = hub.data.entries.filter { !Schedule.active($0, now: Date()) }
-            if items.isEmpty { empty("还没有历史记录", "已处理与已过期的提醒会保存在这里。", "clock") }
+            let items = hub.data.entries.filter { Schedule.inHistory($0, now: Date()) }
+            if items.isEmpty { empty("还没有历史记录", "本轮结束、已处理与已过期的提醒会保存在这里。", "clock") }
             ForEach(items) { TaskRow(hub: hub, entry: $0, history: true) }
         }
     }
@@ -334,7 +341,7 @@ struct ReminderView: View {
                     HStack(spacing: 10) {
                         if entry.canSnooze {
                             Button("10 分钟后") { hub.snooze(entry.id); dismiss() }.buttonStyle(QuietButtonStyle())
-                        } else if hub.data.entries.contains(where: { $0.id == entry.id && !$0.done }) {
+                        } else if !entry.automaticallyArchived && hub.data.entries.contains(where: { $0.id == entry.id && !$0.done }) {
                             Button("标为已处理") {
                                 if hub.finish(entry.id) { dismiss() }
                                 else { hub.showMain?(); dismiss() }

@@ -15,6 +15,17 @@ private func writeEntryJSON(_ entry: Entry, to inbox: URL) throws -> URL {
         let now = calendar.date(from: DateComponents(year: 2026, month: 11, day: 11, hour: 10, minute: 30))!
         var plan = Plan(title: "训练", notes: "", hour: 8, minute: 0, weekdays: [4], link: "")
         let missed = Schedule.due(plan, now: now, calendar: calendar)!
+        var ended = Entry(id: "ended", title: "任务", body: "", source: "Codex", status: "本轮结束", link: "", date: now)
+        assert(Schedule.active(ended, now: now) && !ended.notified, "completion remains eligible for its initial notification")
+        assert(!Schedule.needsAttention(ended, now: now) && Schedule.inHistory(ended, now: now), "completion auto-archives without user acknowledgement")
+        ended.notified = true
+        let restoredEnd = try JSONDecoder().decode(Entry.self, from: JSONEncoder().encode(ended))
+        assert(restoredEnd.notified && !Schedule.needsAttention(restoredEnd, now: now), "restart preserves notification dedup and auto-archive")
+        assert(restoredEnd.historyStatus == "本轮结束", "auto-archiving does not claim manual handling or expiry")
+        for status in ["待确认", "待补充信息", "待完成", "任务失败"] {
+            var actionable = ended; actionable.status = status
+            assert(Schedule.needsAttention(actionable, now: now) && !Schedule.inHistory(actionable, now: now), "actionable states remain pending")
+        }
         assert(missed.date < now, "startup catches today's missed occurrence")
         assert(Schedule.due(plan, now: now.addingTimeInterval(60), calendar: calendar)!.id == missed.id, "stable dedup key")
         assert(Schedule.due(plan, now: now.addingTimeInterval(-4 * 3600), calendar: calendar) == nil)

@@ -34,7 +34,13 @@ extension HubView {
                 Text("关闭窗口后仍在菜单栏运行。首次建议固定应用位置，再启用登录启动。当天错过的计划会补发，过去日期的计划不会连续轰炸。").font(.caption).foregroundStyle(.secondary)
                 HStack { Button("测试弹窗") { hub.test() }; Button("打开数据文件夹") { NSWorkspace.shared.open(hub.root) }; Spacer(); Button("退出 MIRA") { NSApp.terminate(nil) } }
             }.padding(22).background(oatmeal.opacity(0.45)).clipShape(RoundedRectangle(cornerRadius: 12))
-            Text("ChatGPT 计划：本版在本地创建和保存，可关联对话链接；尚未自动同步 ChatGPT 定时任务。数据仅保存在这台电脑，不需要 API Key。").font(.caption).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 12) {
+                Text("定时任务提醒").font(.headline)
+                Text(hub.scheduleStatus).font(.callout).foregroundStyle(teal)
+                Button("立即同步桌面计划") { hub.syncSchedules(); hub.tick() }
+                Text("自动读取本机 Codex 定时计划，每 30 秒同步，每天和每周固定时间的计划可提醒。按本机时区当天补发，完成状态保存在 MIRA。来源计划暂停或删除后会停止提醒。").font(.caption).foregroundStyle(.secondary)
+                Text("ChatGPT 网页／手机端任务尚未连接。可在 MIRA 创建同时间的本地计划并关联 ChatGPT 对话；本机桌面同步不代表云端 Tasks 已同步。").font(.caption).foregroundStyle(.secondary)
+            }.padding(22).background(oatmeal.opacity(0.45)).clipShape(RoundedRectangle(cornerRadius: 12))
         }
     }
 }
