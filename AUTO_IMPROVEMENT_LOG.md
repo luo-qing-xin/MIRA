@@ -49,6 +49,8 @@ MIRA · AI Task Hub 0.2：macOS 菜单栏 AI 任务提醒中心。本地优先�
 | Q17 | P2 | DSH 审批提醒投递失败（收件箱不可写）时仍等待 60 秒才回落，期间原生对话框被占住且用户看不到任何提醒 | 投递失败立即交还桌面端 | ✅ R6 |
 | Q18 | P3 | Codex hooks 备份名精确到秒，同一秒内重复配置会覆盖上一份备份（与 Q6 同类） | 共用 `Backups.unique` | ✅ R7 |
 | Q19 | P2 | DSH 配置/移除/Codex 配置成功时把成功文案写进 `error`，界面用红色错误横幅展示成功 | 新增中性 notice 横幅 | ✅ R7 |
+| Q20 | P3 | `Links.valid` 对 scheme/host 大小写敏感，`HTTPS://CHATGPT.COM/...` 等语义等价链接被拒绝 | 比较前统一小写 | ✅ R8 |
+| Q21 | P3 | `installed` 不识别 `- id: "mira-bridge"`，卸载时可能误删仍被引用的插件目录 | 接受带引号的 id，未知格式走拒绝分支 | ✅ R8 |
 | — | 跳过 | 历史/`seen` 无限增长 | 涉及数据保留语义，需产品决定 | 记录 |
 | — | 跳过 | DSH 会话标题在标题生成前回退为短标识 | 已文档化，改动收益低 | 记录 |
 
@@ -132,6 +134,13 @@ MIRA · AI Task Hub 0.2：macOS 菜单栏 AI 任务提醒中心。本地优先�
 - 行为兼容性：不新增操作流程；按钮、状态行与配置结果不变，仅成功/失败提示的视觉语义分离。
 - 剩余风险：notice 与 error 可同时存在（例如先成功再保存失败），两者都可手动关闭；未做自动互斥，避免隐藏真实错误。
 
+### R8 · 2026-11-11 · 链接大小写与带引号插件 id（Q20/Q21）
+
+- 根因：`URL.scheme` / `URL.host` 保留原始大小写，手工填入的 `HTTPS://CHATGPT.COM/...`、`Codex://threads/...`、`DSH://open` 被判为非法；`DSHLink.installed` 只认无引号行，带引号的等价 YAML id 会被当作未安装，卸载时可能在补丁仍引用插件的情况下删除目录。
+- 修改（`Sources/Core.swift`）：scheme/host 比较前统一小写；id 匹配接受单/双引号形式。带引号且无法按已知块移除时走既有的「拒绝并保留插件目录」分支。
+- 验证：Swift 断言 PASS（新增三种大写链接、恶意后缀仍拒绝，带引号 id 命中、`mira-bridge-2` 仍不命中）；`bash scripts/build.sh` 成功；Python 11 项、Node 29 项通过。
+- 行为兼容性：合法小写链接与既有安装格式行为不变；仅接受原本被误拒的等价输入，并避免一种误删。
+
 ## 4. 恢复入口
 
 ```sh
@@ -142,4 +151,4 @@ node --test tests/test_dsh_bridge.mjs
 swiftc -module-cache-path /tmp/mira-swift-cache Sources/Core.swift tests/CoreTests.swift -o /tmp/mira-core-tests && /tmp/mira-core-tests
 ```
 
-下一项：全量回归与收尾。
+下一项：无新增高收益项；进入全量回归与收尾。

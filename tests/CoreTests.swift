@@ -42,6 +42,10 @@ private func writeEntryJSON(_ entry: Entry, to inbox: URL) throws -> URL {
         assert(!Links.valid("file:///etc/passwd"))
         assert(!Links.valid("https://chatgpt.com.evil.example/c/test"))
         assert(!Links.valid("javascript:alert(1)"))
+        assert(Links.valid("HTTPS://CHATGPT.COM/c/test"), "scheme and host are case-insensitive")
+        assert(Links.valid("Codex://threads/ABC"))
+        assert(Links.valid("DSH://open"))
+        assert(!Links.valid("HTTPS://chatgpt.com.evil.example/c/test"))
         var pending = HubData()
         pending.entries = [Entry(id: "dsh-ask", title: "确认", body: "", source: "DSH · MIRA", status: "待确认", link: "dsh://open", date: now)]
         assert(!pending.close("missing"), "unknown ids are ignored")
@@ -70,6 +74,9 @@ private func writeEntryJSON(_ entry: Entry, to inbox: URL) throws -> URL {
         // Row detection is exact: a different plugin id must not count as ours.
         assert(DSHLink.installed(patch: "rows:\n  - id: mira-bridge\n"))
         assert(!DSHLink.installed(patch: "rows:\n  - id: mira-bridge-2\n"))
+        assert(DSHLink.installed(patch: "rows:\n  - id: \"mira-bridge\"\n"), "quoted ids still refer to the plugin")
+        assert(DSHLink.installed(patch: "rows:\n  id: 'mira-bridge'\n"))
+        assert(!DSHLink.installed(patch: "rows:\n  - id: \"mira-bridge-2\"\n"))
 
         // A disabled layer (`[]`) must be replaced, not appended to, or DSH cannot boot.
         let emptyLayer = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("mira-empty-\(UUID().uuidString)")

@@ -182,9 +182,12 @@ enum Links {
     static func valid(_ value: String) -> Bool {
         if value.isEmpty { return true }
         guard let u = URL(string: value) else { return false }
-        if u.scheme == "https" { return u.host == "chatgpt.com" || u.host == "chat.openai.com" }
-        if u.scheme == "dsh" { return u.host == "open" && (u.path.isEmpty || u.path == "/") }
-        return u.scheme == "codex" && u.host == "threads" && u.path.count > 1
+        // Schemes and hosts are case-insensitive; copy-pasted links may be uppercase.
+        let scheme = u.scheme?.lowercased()
+        let host = u.host?.lowercased()
+        if scheme == "https" { return host == "chatgpt.com" || host == "chat.openai.com" }
+        if scheme == "dsh" { return host == "open" && (u.path.isEmpty || u.path == "/") }
+        return scheme == "codex" && host == "threads" && u.path.count > 1
     }
 }
 
@@ -225,10 +228,12 @@ enum DSHLink {
     }
 
     /// Match the row itself, not a string fragment: `id: mira-bridge-2` is a different plugin.
+    /// A user may quote the id; it still refers to this plugin.
     static func installed(patch: String) -> Bool {
-        patch.split(whereSeparator: \.isNewline).contains { line in
+        let ids = ["mira-bridge", "\"mira-bridge\"", "'mira-bridge'"]
+        return patch.split(whereSeparator: \.isNewline).contains { line in
             let text = String(line).trimmingCharacters(in: .whitespaces)
-            return text == "- id: mira-bridge" || text == "id: mira-bridge"
+            return ids.contains { text == "- id: " + $0 || text == "id: " + $0 }
         }
     }
 
