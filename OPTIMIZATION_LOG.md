@@ -65,6 +65,7 @@ MIRA · AI Task Hub 0.2：macOS 菜单栏 AI 任务提醒中心。本地优先�
 | Q27 | P2 | README 承诺关闭审批弹窗立即交还 DSH，但关闭按钮只隐藏面板，DSH 要等 60 秒超时 | 关闭时写 `defer` 决定 | ✅ R13 |
 | Q28 | P2 | `Info.plist`/README 声明 macOS 13+，`build.sh` 却按宿主 SDK 盖章（产物 `minos 26.0`），13–25 无法启动 | 显式 `-target ...macos13.0` + 构建后校验 | ✅ R14 |
 | Q29 | P3 | 通知权限/hooks/DSH 状态只在启动或应用内操作后刷新；撤销权限后继续发系统通知且无应用内兜底，外部安装后状态陈旧 | 应用激活时重读三项状态 | ✅ R15 |
+| Q30 | P2 | DSH 常用确定性 `fallback` 标题（首条消息按字节截断，保留 `#`/「任务：」）；MIRA 原样使用，截图显示为「# 任务：对当前项目进行长期」 | fallback 时优先首条消息首段；清理标题标记；Swift 展示层兼容旧记录 | ✅ R16 |
 | — | 跳过 | 桌面计划改到更晚时间时，当天提醒先记为已过期、到新时间再恢复 | 既有 `ScheduledTasksTests` 明确断言该行为，属产品取舍，不擅自改动 | 记录 |
 | — | 跳过 | 历史/`seen` 无限增长 | 涉及数据保留语义，需产品决定 | 记录 |
 | — | 跳过 | DSH 会话标题在标题生成前回退为短标识 | 已文档化，改动收益低 | 记录 |
@@ -245,6 +246,27 @@ MIRA · AI Task Hub 0.2：macOS 菜单栏 AI 任务提醒中心。本地优先�
 - 行为兼容性：仅在激活时多读三次本地状态；不改变通知授权流程、安装流程或数据。
 - 剩余风险：如果 MIRA 一直保持前台时权限被外部撤销（例如 MDM），仍要等到下一次激活才刷新；为保持低开销未加定时轮询。
 
+### R16 · 2026-11-11 · 任务名称改为可读的首段摘要（Q30）
+
+- 证据（用户截图 + 本机会话日志）：
+  - 提醒标题为「# 任务：对当前项目进行长期」。对应 DSH 会话 `session-76e34066…` 的 `session/title` 事件在 seq 14 写入 `{"title":"# 任务：对当前项目进行长期","source":{"kind":"fallback"}}`。
+  - DSH 的 `fallbackSessionTitle` 用 `maxWords`/`maxBytes` 截断首条消息，保留 Markdown 标题和「任务：」标签；本机该标题正是按字节预算截在「长期」。
+  - MIRA 的 `titleOf` 优先采用标题服务的任何 title（包括 fallback），`displayTitle` 只做 `trim + slice(0,80)`；`summarize` 折叠整段 prompt 后按 UTF-16 截断，既没有用于 fallback 场景，也没有清理 Markdown。
+- 修改（`integrations/dsh/entry.js`、`integrations/dsh/index.js`、`Sources/Core.swift`、`Sources/Views.swift`、`Sources/App.swift`、测试）：
+  - `entry.js` 新增 `cleanTitle`（去 `#`/列表/引用前缀和「任务：」标签）与按码点、词边界的 `clipTitle`；`summarize` 取首条用户消息的**第一段**而非整段 prompt；`displayTitle` 清理并限制 80 码点。
+  - `index.js` 的 `titleOf` 识别 `snapshot.source.kind === "fallback"`：优先用首条用户消息首段生成摘要；`session/title` 的 fallback 事件不再写入缓存，避免截断标题被永久钉住；provider/user 标题仍优先并会替换缓存。没有 `source` 的旧版本按原行为使用标题。
+  - Swift 新增 `Titles.display` 与 `Entry.displayTitle`，列表、弹窗和系统通知统一使用；只影响展示，不重写 `state.json`，所以旧记录（包括截图这条）立即变干净。
+- 验证：
+  - Node 35 项通过：新增 `summarize` 首段/清理/词边界、fallback 与 provider 选择、fallback 事件不钉缓存、provider 标题替换缓存、原始标题清理；原有 29 项不回归。
+  - Swift 核心断言新增 `Titles.display` 的标题/列表/引用/「任务：」、空清理保留原文、`Entry.displayTitle` 不改写存储标题。
+  - 用真实 `state.json` 跑小工具：存储 `# 任务：对当前项目进行长期` → 展示 `对当前项目进行长期`。
+  - `bash scripts/build.sh` 成功（`minos 13.0`、签名通过）；Python 17 项、Node 35 项、两套 Swift 断言通过；MIRA 重启为 PID 76710，heartbeat 2.5 秒内更新。
+- 行为兼容性：provider/user 标题不变；只在 DSH 标记 fallback 时改用首条消息首段；旧 `state.json` 不迁移，展示即时生效；新条目的标题在入库前已清理。
+- 剩余风险/未完成：
+  - 本机 `~/.dsh/profiles/desktop/plugins/mira-bridge/` 仍是旧文件（沙箱不允许写工作区外）；MIRA 应用包已包含新 JS，点设置页「更新 DSH 连接」或运行 `bash scripts/install-dsh-bridge.sh` 后重启/热重载 DSH，新会话才会用新逻辑。在此之前新提醒仍可能使用截断标题。
+  - 已存在条目的存储标题仍是截断后的文本（显示层只能去前缀，无法补回 DSH 截掉的「自主迭代优化」）；后续新条目会取完整首段。
+  - 依赖 DSH `source.kind` 字段；未来 DSH 若移除该字段，会回退到原行为（直接使用标题）。
+
 ## 4. 恢复入口
 
 ```sh
@@ -256,7 +278,7 @@ swiftc -module-cache-path /tmp/mira-swift-cache Sources/Core.swift tests/CoreTes
 swiftc -module-cache-path /tmp/mira-swift-cache Sources/Core.swift Sources/ScheduledTasks.swift tests/ScheduledTasksTests.swift -o /tmp/mira-schedules-tests && /tmp/mira-schedules-tests
 ```
 
-下一项：剩余候选（桌面计划改到更晚时间时的过期展示、历史/`seen` 清理、前台状态下撤销权限的定时刷新）均需产品取舍或收益不足；本轮不继续制造修改，转入全量回归与运行验收。
+下一项：无新增代码优化；R16 的 DSH 插件文件需用户在 MIRA 设置页点「更新 DSH 连接」（或运行脚本）并重启/热重载 DSH 后，才会对**新**提醒生效；旧记录已通过展示层清理。
 
 ## 5. 历史最终验收（R1–R8，2026-11-11 12:58）
 
@@ -288,3 +310,11 @@ swiftc -module-cache-path /tmp/mira-swift-cache Sources/Core.swift Sources/Sched
   - macOS 13 实机启动：本机为 macOS 26，已验证产物 `minos` 与 `Info.plist` 一致，未做旧系统实机验收。
   - UI 自动化测试仍未引入；交互修复由纯函数断言 + 构建 + 运行验收覆盖。
   - 每次批量事件只弹一个浮窗：既有设计。
+
+## 7. 用户追问后的补充优化（R16，2026-11-11 16:35）
+
+- 触发：用户给出提醒卡片截图（标题「# 任务：对当前项目进行长期」）并询问名称来源与优化空间。
+- 结论：名称不是 MIRA 自拟，而是 DSH 标题服务的确定性 fallback：首条用户消息被按字节预算截断，`#` 和「任务：」原样保留。R16 改为「fallback 时优先首条消息首段 + 清理展示标记」，provider/user 标题仍原样优先。
+- Git：`bf9d503`（R16 代码）；本日志与 README 更新随后单独提交。
+- 验证：Node 35 项、Python 17 项、两套 Swift 断言、`scripts/build.sh`（`minos 13.0`、签名）全部通过；真实 `state.json` 中的旧条目展示为「对当前项目进行长期」；MIRA 重启为 PID 76710，heartbeat 2.5 秒内更新。
+- 仍需用户操作：本机 `~/.dsh/profiles/desktop/plugins/mira-bridge/` 仍是旧文件（沙箱不允许写工作区外）。在 MIRA 设置页点「更新 DSH 连接」或运行 `bash scripts/install-dsh-bridge.sh`，再重启/热重载 DSH；此后新提醒才会使用首段摘要。旧条目的存储文本仍是被 DSH 截断的原名，展示层只能去掉前缀，无法补回缺失文字。
