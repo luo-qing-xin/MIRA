@@ -151,6 +151,17 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
         let ticker = Timer(timeInterval: 3, repeats: true) { [weak self] _ in Task { @MainActor in self?.tick() } }
         RunLoop.main.add(ticker, forMode: .common)
         timer = ticker
+        // Notification permission, hooks.json and the DSH profile can all change
+        // while MIRA is in the background (System Settings or install scripts).
+        // Re-read them on return instead of keeping a stale "已允许"/未连接 state
+        // until the next launch.
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                self?.refreshPermission()
+                self?.checkHooks()
+                self?.checkDSH()
+            }
+        }
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.tick() } }
     }
     func refreshPermission() {
