@@ -83,6 +83,29 @@ function displayTitle(title, sessionId, cwd, turn) {
   return clipTitle(named || fallback, 80);
 }
 
+/** Title from one user prompt: first paragraph, head + tail when clipped. */
+export function promptTitle(value, { limit = 44, head = 28, tail = 12 } = {}) {
+  const text = String(value ?? "").split(/\n\s*\n/).map((part) => part.trim()).find(Boolean) ?? "";
+  const clean = cleanTitle(text);
+  const characters = Array.from(clean);
+  if (characters.length <= limit) return clean;
+  let start = characters.slice(0, head).join("").trimEnd();
+  const boundary = start.lastIndexOf(" ");
+  if (boundary >= head * 0.6) start = start.slice(0, boundary).trimEnd();
+  let tailStart = Math.max(0, characters.length - tail);
+  if (tailStart > 0 && /[A-Za-z]/.test(characters[tailStart]) && /[A-Za-z]/.test(characters[tailStart - 1])) {
+    while (tailStart > 0 && /[A-Za-z]/.test(characters[tailStart - 1]) && characters.length - tailStart < tail + 16) {
+      tailStart -= 1;
+    }
+  }
+  let end = characters.slice(tailStart).join("").trimStart();
+  const firstSpace = end.indexOf(" ");
+  if (firstSpace >= 0 && firstSpace <= tail * 0.4) end = end.slice(firstSpace + 1).trimStart();
+  end = end.replace(/^[，。、；：,.;:!?！？\s]+/, "").trim();
+  if (!end) return characters.slice(0, limit).join("").trimEnd() + "…";
+  return start.replace(/[…\.]+$/, "").trimEnd() + "…" + end;
+}
+
 /** Short, readable task summary used when no session title exists yet. */
 export function summarize(text, limit = 32) {
   // Prefer the authored first paragraph: later paragraphs are usually the
@@ -130,6 +153,29 @@ export function buildApprovalEntry({
   if (typeof token === "string" && token.length > 0) entry.token = token;
   if (Number.isFinite(ttlMs) && ttlMs > 0) entry.expires = (time + ttlMs) / 1000;
   return entry;
+}
+
+/** Id for the in-progress entry of one DSH turn. */
+export function runningEntryId(sessionId, turn) {
+  return createHash("sha256")
+    .update(JSON.stringify([String(sessionId), Number(turn), "turn/start"]))
+    .digest("hex");
+}
+
+/** Build the lightweight "running" entry shown while a DSH turn is active. */
+export function buildRunningEntry({ sessionId, cwd, turn, time, title, link = "dsh://open" }) {
+  return {
+    id: runningEntryId(sessionId, turn),
+    title: displayTitle(title, sessionId, cwd, turn),
+    body: "DSH 正在处理这一轮，完成后会更新结果。",
+    source: ("DSH · " + projectName(cwd)).slice(0, 80),
+    status: "运行中",
+    link,
+    date: time / 1000,
+    done: false,
+    notified: false,
+    thread: String(sessionId),
+  };
 }
 
 /** Build one reminder covering a pending user-question request. */

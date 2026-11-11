@@ -49,6 +49,51 @@ class ReceiverTests(unittest.TestCase):
             payload['session_id'] = "missing' OR 1=1 --"
             self.assertIn('MIRA · 任务 missing', module.normalize(payload, 100, tmp)['title'])
 
+    def test_prompt_title_formatting(self):
+        self.assertEqual(module.prompt_title('修复登录按钮的对比度'), '修复登录按钮的对比度')
+        self.assertEqual(
+            module.prompt_title('# 任务：把今日已完成改成下拉\n\n第二段不进入标题'),
+            '把今日已完成改成下拉',
+        )
+        long = '这是一个非常长的提示词，前半部分描述背景和目标，后半部分给出真正的具体要求：把左下角印章删除，并且默认展开。'
+        title = module.prompt_title(long)
+        self.assertEqual(title, '这是一个非常长的提示词，前半部分描述背景和目标，后半部分…印章删除，并且默认展开。')
+        self.assertLessEqual(len(title), 44)
+
+    def test_prompt_title_is_reused_for_later_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prompt = '把左下角印章删掉，字体再放大一些'
+            module.remember_prompt(tmp, 'thread-1', 'turn-1', prompt)
+            stop = module.normalize(
+                dict(hook_event_name='Stop', session_id='thread-1', turn_id='turn-1', cwd='/MIRA'),
+                100, None, tmp)
+            self.assertEqual(stop['title'], prompt)
+            later = module.normalize(
+                dict(hook_event_name='Stop', session_id='thread-1', turn_id='turn-2', cwd='/MIRA'),
+                100, None, tmp)
+            self.assertNotEqual(later['title'], prompt, 'a title from another turn is not reused')
+
+    def test_user_prompt_is_stored_for_the_following_stop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prompt = '把今日已完成做成默认展开的下拉样式，最多放七个，超过显示 show more 然后点击跳转到记录页面。'
+            for event, extra in [('UserPromptSubmit', {'prompt': prompt}),
+                                 ('Stop', {'turn_id': 'turn-1'})]:
+                payload = dict(hook_event_name=event, session_id='thread-1', cwd='/MIRA', **extra)
+                run = subprocess.run(['/usr/bin/python3', str(SCRIPT)], input=json.dumps(payload),
+                                     text=True, capture_output=True,
+                                     env={**os.environ, 'MIRA_DATA_DIR': tmp})
+                self.assertEqual(run.returncode, 0)
+            entries = sorted((Path(tmp)/'inbox').glob('*.json'))
+            stop = json.loads(entries[-1].read_text())
+            self.assertEqual(stop['title'], module.prompt_title(prompt))
+            titles = list((Path(tmp)/'titles').glob('*.json'))
+            self.assertEqual(len(titles), 1)
+            record = json.loads(titles[0].read_text())
+            self.assertEqual(record['title'], module.prompt_title(prompt))
+            self.assertLessEqual(len(record['title']), 44)
+            self.assertNotEqual(record['title'], prompt, 'the full prompt is never stored')
+            self.assertEqual(titles[0].stat().st_mode & 0o777, 0o600)
+
     def test_missing_or_incompatible_metadata_is_nonblocking(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertIsNone(module.task_title('abc', tmp))

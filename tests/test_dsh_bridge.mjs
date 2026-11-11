@@ -11,11 +11,14 @@ import {
   buildDismissal,
   buildEntry,
   buildQuestionEntry,
+  buildRunningEntry,
   entryId,
   isSubagent,
   projectName,
   questionEntryId,
+  runningEntryId,
   reasonInfo,
+  promptTitle,
   summarize,
   writeEntry,
 } from "../integrations/dsh/entry.js";
@@ -197,7 +200,7 @@ test("repeated delivery of the same turn collapses to one file", () => {
   assert.equal(inboxCount(root), 1);
 });
 
-test("observes session events and delivers only real turn ends", () => {
+test("turn start produces one running entry and turn end adds the result", () => {
   const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
   const handlers = new Map();
   const ctx = {
@@ -209,13 +212,33 @@ test("observes session events and delivers only real turn ends", () => {
   const emit = (session, event) => handlers.get("session/event")(session, event);
   emit(session(), { type: "session/title", time: TIME, data: { title: "真实任务" } });
   emit(session(), { type: "turn/start", time: TIME, data: { turn: 1 } });
-  assert.equal(inboxCount(root), 0, "turn start is not a reminder");
+  assert.equal(inboxCount(root), 1, "running entry is delivered");
+  const running = inboxEntries(root).find((entry) => entry.status === "运行中");
+  assert.ok(running, "running entry exists");
+  assert.equal(running.title, "真实任务");
+  assert.equal(running.id, runningEntryId("session-1234-abcd", 1));
 
   emit(session(), { type: "turn/end", time: TIME, data: { turn: 1, reason: { kind: "completed" } } });
-  const [file] = readdirSync(join(root, "inbox"));
-  const entry = JSON.parse(readFileSync(join(root, "inbox", file), "utf8"));
-  assert.equal(entry.title, "真实任务");
-  assert.equal(entry.status, "本轮结束");
+  assert.equal(inboxCount(root), 2);
+  const ended = inboxEntries(root).find((entry) => entry.status === "本轮结束");
+  assert.ok(ended, "turn end is delivered");
+  assert.equal(ended.title, "真实任务");
+  assert.equal(ended.thread, running.thread);
+});
+
+test("builds a lightweight running entry", () => {
+  const entry = buildRunningEntry({
+    sessionId: "session-9",
+    cwd: "/Users/yunye/MIRA",
+    turn: 2,
+    time: TIME,
+    title: "设计 AI 任务与提醒中心",
+  });
+  assert.equal(entry.id, runningEntryId("session-9", 2));
+  assert.equal(entry.status, "运行中");
+  assert.equal(entry.title, "设计 AI 任务与提醒中心");
+  assert.equal(entry.thread, "session-9");
+  assert.equal(entry.notified, false);
 });
 
 test("skips subagent children", () => {
@@ -556,7 +579,7 @@ function sessionWithEvents(events) {
   };
 }
 
-test("uses the first user message as the task name when no title exists", () => {
+test("uses the latest user prompt as the task name when no title exists", () => {
   const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
   const handlers = new Map();
   apply(
@@ -574,8 +597,7 @@ test("uses the first user message as the task name when no title exists", () => 
   });
   const [file] = readdirSync(join(root, "inbox"));
   const entry = JSON.parse(readFileSync(join(root, "inbox", file), "utf8"));
-  assert.equal(entry.title, summarize("我想做一个软件，就是说如果我的 codex 任务完成了，或者需要我确定了"));
-  assert.ok(entry.title.endsWith("…"), "long prompt is truncated");
+  assert.equal(entry.title, promptTitle("我想做一个软件，就是说如果我的 codex 任务完成了，或者需要我确定了"));
 });
 
 test("synthetic context messages are not used as task names", () => {
@@ -596,6 +618,44 @@ test("synthetic context messages are not used as task names", () => {
   const [file] = readdirSync(join(root, "inbox"));
   const entry = JSON.parse(readFileSync(join(root, "inbox", file), "utf8"));
   assert.equal(entry.title, "MIRA · 第 2 轮");
+});
+
+test("promptTitle keeps short prompts whole and uses head + tail when long", () => {
+  assert.equal(promptTitle("修复登录按钮的对比度"), "修复登录按钮的对比度");
+  assert.equal(
+    promptTitle("# 任务：把今日已完成改成下拉\n\n第二段不进入标题"),
+    "把今日已完成改成下拉",
+  );
+  const long = "这是一个非常长的提示词，前半部分描述背景和目标，后半部分给出真正的具体要求：把左下角印章删除，并且默认展开。";
+  assert.equal(promptTitle(long), "这是一个非常长的提示词，前半部分描述背景和目标，后半部分…印章删除，并且默认展开。");
+  assert.ok(Array.from(promptTitle(long)).length <= 44);
+  assert.equal(promptTitle("Fix the login button contrast issue on the settings page"), "Fix the login button…settings page");
+});
+
+test("each DSH round uses its own prompt as the title", () => {
+  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
+  const handlers = new Map();
+  apply(
+    { on: (event, handler) => handlers.set(event, handler), logger: { warn: () => {} } },
+    { dataDir: root },
+  );
+  const events = [
+    { type: "user/message", data: { source: { kind: "user" }, content: [{ type: "text", text: "设计 AI 任务与提醒中心" }] } },
+  ];
+  const session = {
+    id: "session-rounds",
+    header: { cwd: "/Users/yunye/MIRA" },
+    get seq() { return events.length; },
+    eventAt: (index) => events[index],
+  };
+  const emit = (event) => handlers.get("session/event")(session, event);
+  emit({ type: "turn/start", time: TIME, data: { turn: 1 } });
+  emit({ type: "turn/end", time: TIME + 1, data: { turn: 1, reason: { kind: "completed" } } });
+  events.push({ type: "user/message", data: { source: { kind: "user" }, content: [{ type: "text", text: "把左下角印章删掉，字体再放大一些" }] } });
+  emit({ type: "turn/start", time: TIME + 2, data: { turn: 2 } });
+  emit({ type: "turn/end", time: TIME + 3, data: { turn: 2, reason: { kind: "completed" } } });
+  const titles = inboxEntries(root).filter((entry) => entry.status === "本轮结束").map((entry) => entry.title).sort();
+  assert.deepEqual(titles, ["设计 AI 任务与提醒中心", "把左下角印章删掉，字体再放大一些"].sort());
 });
 
 test("summarize cleans prompt markup and prefers the first paragraph", () => {
@@ -663,7 +723,7 @@ test("prefers the full prompt over a DSH fallback title", () => {
   assert.equal(entry.title, "对当前项目进行长期自主迭代优化");
 });
 
-test("uses a generated title instead of the prompt", () => {
+test("prefers the round prompt over a generated session title", () => {
   const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
   const handlers = new Map();
   apply(
@@ -684,7 +744,7 @@ test("uses a generated title instead of the prompt", () => {
   });
   const [file] = readdirSync(join(root, "inbox"));
   const entry = JSON.parse(readFileSync(join(root, "inbox", file), "utf8"));
-  assert.equal(entry.title, "设计 AI 任务与提醒中心");
+  assert.equal(entry.title, "请帮我重构登录页");
 });
 
 test("cleans a fallback title when no prompt is readable", () => {
@@ -750,5 +810,6 @@ test("a fallback title event does not pin the truncated name", () => {
   const titles = readdirSync(join(root, "inbox"))
     .sort()
     .map((file) => JSON.parse(readFileSync(join(root, "inbox", file), "utf8")).title);
-  assert.ok(titles.includes("长期迭代优化任务"), "a provider title replaces the prompt summary");
+  assert.ok(!titles.includes("长期迭代优化任务"), "session titles never replace the current prompt");
+  assert.ok(titles.every((title) => title === "对当前项目进行长期自主迭代优化"));
 });

@@ -3,12 +3,93 @@
 import hashlib
 import json
 import os
+import re
 import sqlite3
 from pathlib import Path
 import sys
 import time
 import uuid
 from urllib.parse import quote
+
+
+TITLE_LIMIT = 44
+TITLE_HEAD = 28
+TITLE_TAIL = 12
+
+
+def prompt_title(prompt):
+    """First prompt paragraph, head + tail when it is longer than one line."""
+    text = '' if prompt is None else str(prompt)
+    paragraphs = [part.strip() for part in re.split(r'\n\s*\n', text.strip())]
+    first = next((part for part in paragraphs if part), '')
+    text = re.sub(r'\s+', ' ', first).strip()
+    for pattern in (r'^#{1,6}\s+', r'^(?:[-*+]\s+|>\s+)', r'^任务\s*[：:]\s*'):
+        text = re.sub(pattern, '', text)
+    text = text.strip()
+    characters = list(text)
+    if len(characters) <= TITLE_LIMIT:
+        return ''.join(characters)
+    start = ''.join(characters[:TITLE_HEAD]).rstrip()
+    boundary = start.rfind(' ')
+    if boundary >= TITLE_HEAD * 0.6:
+        start = start[:boundary].rstrip()
+    tail_start = max(0, len(characters) - TITLE_TAIL)
+    if tail_start > 0 and characters[tail_start].isascii() and characters[tail_start].isalpha() \
+            and characters[tail_start - 1].isascii() and characters[tail_start - 1].isalpha():
+        while tail_start > 0 and characters[tail_start - 1].isascii() and characters[tail_start - 1].isalpha() \
+                and len(characters) - tail_start < TITLE_TAIL + 16:
+            tail_start -= 1
+    end = ''.join(characters[tail_start:]).lstrip()
+    first_space = end.find(' ')
+    if 0 <= first_space <= TITLE_TAIL * 0.4:
+        end = end[first_space + 1:].lstrip()
+    end = re.sub(r'^[，。、；：,.;:!?！？\s]+', '', end).strip()
+    start = re.sub(r'[…\.]+$', '', start).rstrip()
+    if not end:
+        return ''.join(characters[:TITLE_LIMIT]).rstrip() + '…'
+    return start + '…' + end
+
+
+def _title_path(root, session):
+    digest = hashlib.sha256(session.encode('utf-8')).hexdigest()
+    return Path(root) / 'titles' / (digest + '.json')
+
+
+def remember_prompt(root, session, turn, prompt):
+    """Persist only the clipped title, never the full prompt."""
+    title = prompt_title(prompt)
+    if not title:
+        return None
+    try:
+        directory = Path(root) / 'titles'
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(directory, 0o700)
+        temporary = directory / (uuid.uuid4().hex + '.tmp')
+        with temporary.open('x') as output:
+            os.chmod(temporary, 0o600)
+            json.dump({'session': session, 'turn': turn, 'title': title, 'date': time.time()},
+                      output, ensure_ascii=False)
+        temporary.replace(_title_path(root, session))
+    except Exception:
+        return None
+    return title
+
+
+def remembered_title(root, session, turn, now, max_age=86400):
+    try:
+        record = json.loads(_title_path(root, session).read_text(encoding='utf-8'))
+        title = record.get('title')
+        if not isinstance(title, str) or not title.strip():
+            return None
+        stored_turn = record.get('turn')
+        if turn and stored_turn and str(turn) != str(stored_turn):
+            return None
+        date = record.get('date')
+        if isinstance(date, (int, float)) and now - date > max_age:
+            return None
+        return title.strip()
+    except (OSError, ValueError):
+        return None
 
 
 def task_title(session, codex_home):
@@ -35,7 +116,7 @@ def task_title(session, codex_home):
     return None
 
 
-def normalize(payload, now, codex_home=None):
+def normalize(payload, now, codex_home=None, data_dir=None):
     event = payload.get('hook_event_name', '')
     statuses = {'Stop': '本轮结束', 'PermissionRequest': '待确认',
                 'UserPromptSubmit': '运行中', 'Interrupt': '已中断', 'PreToolUse': '待补充信息'}
@@ -60,7 +141,15 @@ def normalize(payload, now, codex_home=None):
     missing_project = not project
     if missing_project:
         project = 'Codex'
-    name = task_title(session, codex_home) if codex_home is not None else None
+    name = None
+    if event == 'UserPromptSubmit':
+        prompt = payload.get('prompt')
+        if isinstance(prompt, str):
+            name = prompt_title(prompt)
+    if not name and data_dir is not None:
+        name = remembered_title(data_dir, session, turn, now)
+    if not name:
+        name = task_title(session, codex_home) if codex_home is not None else None
     name = name or project + ' · 任务 ' + session[:8]
     bodies = {'Stop': 'Codex 本轮已结束，请打开原任务查看结果。',
               'PermissionRequest': 'Codex 即将请求执行权限，请返回原任务检查。此提醒不会批准操作。',
@@ -77,9 +166,17 @@ def normalize(payload, now, codex_home=None):
 def main():
     try:
         payload = json.load(sys.stdin)
-        entry = normalize(payload, time.time(), os.environ.get('CODEX_HOME', str(Path.home() / '.codex')))
+        root = Path(os.environ.get('MIRA_DATA_DIR', str(Path.home() / 'Library/Application Support/MIRA')))
+        entry = normalize(payload, time.time(),
+                          os.environ.get('CODEX_HOME', str(Path.home() / '.codex')), root)
         if entry:
-            root = Path(os.environ.get('MIRA_DATA_DIR', str(Path.home() / 'Library/Application Support/MIRA')))
+            if payload.get('hook_event_name') == 'UserPromptSubmit':
+                event_session = payload.get('session_id')
+                if isinstance(event_session, str) and event_session.strip():
+                    prompt = payload.get('prompt')
+                    if isinstance(prompt, str):
+                        remember_prompt(root, event_session.strip(),
+                                        str(payload.get('turn_id') or ''), prompt)
             inbox = root / 'inbox'
             inbox.mkdir(parents=True, exist_ok=True, mode=0o700)
             os.chmod(root, 0o700)

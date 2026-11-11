@@ -10,8 +10,10 @@ import {
   buildDismissal,
   buildEntry,
   buildQuestionEntry,
+  buildRunningEntry,
   isSubagent,
   questionEntryId,
+  promptTitle,
   summarize,
   writeEntry,
 } from "./entry.js";
@@ -97,10 +99,11 @@ export function apply(ctx, config) {
     return skipSubagents && isSubagent(session);
   }
 
-  function firstPrompt(session) {
+  function scanPrompt(session, newestFirst) {
     if (typeof session.eventAt !== "function" || !Number.isSafeInteger(session.seq)) return undefined;
     const limit = Math.min(session.seq, 5000);
-    for (let seq = 0; seq < limit; seq += 1) {
+    for (let offset = 0; offset < limit; offset += 1) {
+      const seq = newestFirst ? limit - 1 - offset : offset;
       const event = session.eventAt(seq);
       if (event?.type !== "user/message" || event.data?.source?.kind !== "user") continue;
       const blocks = Array.isArray(event.data.content) ? event.data.content : [];
@@ -110,7 +113,28 @@ export function apply(ctx, config) {
     return undefined;
   }
 
-  function titleOf(session) {
+  function firstPrompt(session) {
+    return scanPrompt(session, false);
+  }
+
+  /** The most recent prompt authored by the user, regardless of turn boundaries. */
+  function latestPrompt(session) {
+    return scanPrompt(session, true);
+  }
+
+  /** Current-round prompt title, with the session title as a fallback. */
+  function turnTitle(session) {
+    try {
+      const prompt = latestPrompt(session);
+      const title = prompt ? promptTitle(prompt) : "";
+      if (title) return title;
+    } catch (error) {
+      ctx.logger?.warn?.(`mira-bridge: prompt title failed: ${error?.message ?? error}`);
+    }
+    return sessionTitleOf(session);
+  }
+
+  function sessionTitleOf(session) {
     const cached = titles.get(session.id);
     if (cached) return cached;
     let serviceTitle;
@@ -171,6 +195,18 @@ export function apply(ctx, config) {
         if (Number.isSafeInteger(event.data?.turn)) turns.set(session.id, event.data.turn);
       }
       switch (event.type) {
+        case "turn/start":
+          deliver(
+            buildRunningEntry({
+              sessionId: session.id,
+              cwd: session.header?.cwd,
+              turn: event.data?.turn,
+              time: typeof event.time === "number" ? event.time : Date.now(),
+              title: turnTitle(session),
+              link,
+            }),
+          );
+          break;
         case "turn/end":
           deliver(
             buildEntry({
@@ -179,7 +215,7 @@ export function apply(ctx, config) {
               turn: event.data?.turn,
               reason: event.data?.reason,
               time: event.time,
-              title: titleOf(session),
+              title: turnTitle(session),
               link,
             }),
           );
@@ -204,7 +240,7 @@ export function apply(ctx, config) {
       sessionId: session.id,
       cwd: session.header?.cwd,
       time: askedAt,
-      title: titleOf(session),
+      title: turnTitle(session),
       turn: turns.get(session.id),
       toolName: request.toolName,
       reason: request.reason,
@@ -244,7 +280,7 @@ export function apply(ctx, config) {
             sessionId: session.id,
             cwd: session.header?.cwd,
             time: Date.now(),
-            title: titleOf(session),
+            title: turnTitle(session),
             turn: turns.get(session.id),
             questions,
             link,
