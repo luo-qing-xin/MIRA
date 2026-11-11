@@ -91,6 +91,29 @@ enum Schedule {
         e.automaticallyArchived || !active(e, now: now)
     }
 }
+enum Notify {
+    /// Entries that must be announced now. Selection is pure so the caller can
+    /// persist the `notified` flags and restore them if that save fails.
+    static func due(_ entries: [Entry], now: Date) -> [Int] {
+        entries.indices.filter { index in
+            let entry = entries[index]
+            let snoozed = entry.snooze.map { $0 > now } ?? false
+            return Schedule.active(entry, now: now) && !entry.notified
+                && entry.status != "运行中" && !snoozed
+        }
+    }
+
+    /// Mark selected entries as announced in memory so the following state save
+    /// records them. When that save fails, `rollback` restores the flags so the
+    /// next tick announces the same entries instead of silently dropping them.
+    static func mark(_ entries: inout [Entry], at indices: [Int]) {
+        for index in indices where entries.indices.contains(index) { entries[index].notified = true }
+    }
+
+    static func rollback(_ entries: inout [Entry], at indices: [Int]) {
+        for index in indices where entries.indices.contains(index) { entries[index].notified = false }
+    }
+}
 enum Decisions {
     static let choices: Set<String> = ["allow", "deny", "defer"]
 

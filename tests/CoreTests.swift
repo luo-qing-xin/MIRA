@@ -26,6 +26,28 @@ private func writeEntryJSON(_ entry: Entry, to inbox: URL) throws -> URL {
             var actionable = ended; actionable.status = status
             assert(Schedule.needsAttention(actionable, now: now) && !Schedule.inHistory(actionable, now: now), "actionable states remain pending")
         }
+        // Announcement selection is pure; rolling the flags back after a failed
+        // save must make the next tick retry the same reminders.
+        var queued = [
+            Entry(id: "due", title: "到点", body: "", source: "个人计划", status: "待完成", link: "", date: now),
+            Entry(id: "already", title: "已通知", body: "", source: "个人计划", status: "待完成", link: "", date: now, notified: true),
+            Entry(id: "running", title: "运行", body: "", source: "Codex", status: "运行中", link: "", date: now),
+            Entry(id: "snoozed", title: "延后", body: "", source: "个人计划", status: "待完成", link: "", date: now, snooze: now.addingTimeInterval(600)),
+            Entry(id: "expired", title: "过期", body: "", source: "个人计划", status: "待完成", link: "", date: now, expires: now.addingTimeInterval(-1)),
+            Entry(id: "resumed", title: "延后到点", body: "", source: "个人计划", status: "待完成", link: "", date: now, snooze: now.addingTimeInterval(-1)),
+        ]
+        let firstDue = Notify.due(queued, now: now)
+        assert(firstDue == [0, 5], "only active, unsnoozed, unannounced entries are due")
+        Notify.mark(&queued, at: firstDue)
+        assert(queued[0].notified && queued[5].notified && Notify.due(queued, now: now).isEmpty)
+        Notify.rollback(&queued, at: firstDue)
+        assert(Notify.due(queued, now: now) == firstDue, "a failed save retries the same reminders")
+        assert(!queued[0].notified && !queued[5].notified, "rollback clears only the attempted flags")
+        var completion = Entry(id: "auto", title: "完成", body: "", source: "DSH · MIRA", status: "本轮结束", link: "dsh://open", date: now)
+        assert(Notify.due([completion], now: now) == [0], "completion notifies once before auto-archiving")
+        completion.done = true
+        assert(Notify.due([completion], now: now).isEmpty)
+        assert(Notify.due([], now: now).isEmpty)
         assert(missed.date < now, "startup catches today's missed occurrence")
         assert(Schedule.due(plan, now: now.addingTimeInterval(60), calendar: calendar)!.id == missed.id, "stable dedup key")
         assert(Schedule.due(plan, now: now.addingTimeInterval(-4 * 3600), calendar: calendar) == nil)

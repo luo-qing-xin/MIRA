@@ -178,16 +178,22 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
             }
         }
         var ready: [Entry] = []
-        for i in data.entries.indices {
-            let e = data.entries[i]
-            if Schedule.active(e, now: now), !e.notified, e.status != "运行中", e.snooze == nil || e.snooze! <= now {
-                data.entries[i].notified = true; changed = true; ready.append(e)
-            }
+        let dueIndices = Notify.due(data.entries, now: now)
+        if !dueIndices.isEmpty {
+            Notify.mark(&data.entries, at: dueIndices)
+            changed = true
+            ready = dueIndices.map { data.entries[$0] }
         }
         // One state write per tick, however many inbox files arrived. Files are
         // only deleted after the save succeeded, so a failure retries next tick;
         // savePending also retries writes that failed outside the inbox path.
-        if !drained.consumed.isEmpty || changed || savePending, !save() { return }
+        if !drained.consumed.isEmpty || changed || savePending, !save() {
+            // Without this rollback the in-memory entries would stay `notified`
+            // while the notification was never shown, so the reminder would be
+            // lost once a later tick manages to save.
+            Notify.rollback(&data.entries, at: dueIndices)
+            return
+        }
         for url in drained.consumed { try? FileManager.default.removeItem(at: url) }
         for target in drained.dismissed + revised {
             closePopup?(target)
