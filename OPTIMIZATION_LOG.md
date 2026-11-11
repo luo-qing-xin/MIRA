@@ -62,6 +62,9 @@ MIRA · AI Task Hub 0.2：macOS 菜单栏 AI 任务提醒中心。本地优先�
 | Q24 | P2 | 卸载脚本在补丁不可读时把它当作「没有 mira-bridge」，仍 `rm -rf` 插件目录；删除后的复核只认无引号行，残留引用不会被发现 | 不可读即拒绝、引号/注释行复核、原子写补丁并保留权限 | ✅ R11 |
 | Q25 | P3 | 安装脚本要求补丁文件已存在，与应用「缺失时按空层新建」不一致 | 缺失时创建空层 | ✅ R11 |
 | Q26 | P2 | `Inbox.drain` 用 `try?` 吞掉收件箱列举失败，事件静默不处理且界面无错误；运行中删除收件箱不会重建 | 报告错误、非目录拒绝、缺失时以 0700 重建 | ✅ R12 |
+| Q27 | P2 | README 承诺关闭审批弹窗立即交还 DSH，但关闭按钮只隐藏面板，DSH 要等 60 秒超时 | 关闭时写 `defer` 决定 | ✅ R13 |
+| Q28 | P2 | `Info.plist`/README 声明 macOS 13+，`build.sh` 却按宿主 SDK 盖章（产物 `minos 26.0`），13–25 无法启动 | 显式 `-target ...macos13.0` + 构建后校验 | ✅ R14 |
+| Q29 | P3 | 通知权限/hooks/DSH 状态只在启动或应用内操作后刷新；撤销权限后继续发系统通知且无应用内兜底，外部安装后状态陈旧 | 应用激活时重读三项状态 | ✅ R15 |
 | — | 跳过 | 桌面计划改到更晚时间时，当天提醒先记为已过期、到新时间再恢复 | 既有 `ScheduledTasksTests` 明确断言该行为，属产品取舍，不擅自改动 | 记录 |
 | — | 跳过 | 历史/`seen` 无限增长 | 涉及数据保留语义，需产品决定 | 记录 |
 | — | 跳过 | DSH 会话标题在标题生成前回退为短标识 | 已文档化，改动收益低 | 记录 |
@@ -209,6 +212,39 @@ MIRA · AI Task Hub 0.2：macOS 菜单栏 AI 任务提醒中心。本地优先�
 - 行为兼容性：正常队列处理完全不变；只有在队列本身不可用时才新增错误提示/重建。
 - 剩余风险：权限持续错误时同一错误会随每 3 秒 tick 重复显示（这是需要用户处理的配置问题，而非可隔离的坏文件）；未尝试自动修改目录权限。
 
+### R13 · 2026-11-11 · 关闭审批弹窗立即交还 DSH（Q27）
+
+- 证据：README 承诺「超时、关闭弹窗、或选『去 DSH 处理』都会立即交还 DSH 原生对话框」，但 `ReminderView` 的关闭按钮只调用面板 `dismiss`，不写 `defer` 决定；`integrations/dsh/index.js` 的 `waitForDecision` 只能等 60 秒超时，期间 DSH 原生对话框一直被挂起。
+- 修改（`Sources/Core.swift`、`Sources/Views.swift`、`tests/CoreTests.swift`）：
+  - 新增 `ReminderClose.decision(for:)`：仅当条目有 token 且状态为「待确认」时返回 `defer`，其它提醒返回 nil。
+  - 关闭按钮先写入该决定（`Hub.decide` 写 `decisions/<token>.json` 并收起弹窗），再执行 dismiss；辅助说明区分为「交还 DSH」/「保留任务记录」。
+- 验证：
+  - Swift 断言新增：待确认 + token → `defer`；无 token → nil；有 token 但状态不是待确认 → nil；原有审批决定与 DSH 安装断言继续通过。
+  - `bash scripts/build.sh` 成功；Python 17 项、Node 29 项通过。
+- 行为兼容性：普通（非审批）提醒的关闭仍只关闭弹窗、保留待处理；审批关闭从「保留待处理并等超时」变为「立即交还并标记已处理」，与 README 一致。
+- 剩余风险：若写决定文件失败（权限/磁盘），界面仍会关闭并显示错误，DSH 仍走 60 秒超时回落；这是本地故障路径，未做自动重试。
+
+### R14 · 2026-11-11 · 产物最低系统版本与声明一致（Q28）
+
+- 证据：`Info.plist` 的 `LSMinimumSystemVersion` 是 13.0，README 也声明 macOS 13+；但 `scripts/build.sh` 未传 `-target`，`otool -l` 显示本机构建产物的 `minos 26.0`（SDK 26.4）。macOS 13–25 会拒绝加载该二进制，与对外声明矛盾。
+- 修改（`scripts/build.sh`）：
+  - 默认目标 `$(uname -m)-apple-macos13.0`，可用 `MIRA_TARGET` 覆盖；构建后读取 `LC_BUILD_VERSION` 的 `minos` 并与目标比较，不一致直接失败。
+- 验证：
+  - 重新构建 → `otool -l` 显示 `minos 13.0`；`codesign --verify --deep --strict` 通过；构建脚本的校验在正常构建下通过。
+  - 全量回归（Python 17、Node 29、两套 Swift、构建）通过。
+- 行为兼容性：源码、界面与数据格式不变；只是把产物标记回声明支持的 macOS 13。当前仍只构建本机架构（Apple Silicon 上为 arm64），未做 universal/fat 包。
+- 剩余风险：本机是 macOS 26，无法在真实 macOS 13 环境启动验证；可用性依赖编译器在 deployment target 13.0 下对所有 API 的可用性检查（本次编译已通过），但未做旧系统实机验收。
+
+### R15 · 2026-11-11 · 从后台返回时刷新权限与连接状态（Q29）
+
+- 证据：`refreshPermission` 只在启动和点击「授权通知」后调用；`checkHooks`/`checkDSH` 只在启动和应用内安装/移除后调用。用户在系统设置撤销通知权限后回到 MIRA，`notificationStatus` 仍是「已允许」，`tick` 继续只发系统通知；系统会静默丢弃无权限的通知，应用内兜底被跳过，提醒可能丢失。外部运行安装脚本后，设置页也会一直显示旧的「尚未连接」直到重启。
+- 修改（`Sources/App.swift`）：`start()` 注册 `NSApplication.didBecomeActiveNotification`，应用回到前台时重读通知权限、Codex hooks 与 DSH profile 状态。三者都是既有的幂等读取。
+- 验证：
+  - `bash scripts/build.sh` 成功；Python 17 项、Node 29 项、两套 Swift 断言全部通过；未修改任何系统设置或用户连接文件。
+  - 未做自动化权限切换（需要改动本机系统通知设置）；人工验收：在系统设置撤销/恢复 MIRA 通知后切回应用，状态应立即更新；在终端运行安装脚本后切回，设置页应显示已连接。
+- 行为兼容性：仅在激活时多读三次本地状态；不改变通知授权流程、安装流程或数据。
+- 剩余风险：如果 MIRA 一直保持前台时权限被外部撤销（例如 MDM），仍要等到下一次激活才刷新；为保持低开销未加定时轮询。
+
 ## 4. 恢复入口
 
 ```sh
@@ -220,7 +256,7 @@ swiftc -module-cache-path /tmp/mira-swift-cache Sources/Core.swift tests/CoreTes
 swiftc -module-cache-path /tmp/mira-swift-cache Sources/Core.swift Sources/ScheduledTasks.swift tests/ScheduledTasksTests.swift -o /tmp/mira-schedules-tests && /tmp/mira-schedules-tests
 ```
 
-下一项：R13 通知权限在系统设置变更后刷新；R14 候选为日历边界与剩余手写检查项，需先确认收益再动手。
+下一项：剩余候选（桌面计划改到更晚时间时的过期展示、历史/`seen` 清理、前台状态下撤销权限的定时刷新）均需产品取舍或收益不足；本轮不继续制造修改，转入全量回归与运行验收。
 
 ## 5. 历史最终验收（R1–R8，2026-11-11 12:58）
 
@@ -235,3 +271,20 @@ swiftc -module-cache-path /tmp/mira-swift-cache Sources/Core.swift Sources/Sched
   - 同一用户的其他进程理论上可伪造审批回执：已文档化的本地机制边界。
   - 未引入 UI 自动化测试；`Hub.tick` 通过 `Inbox.drain` 纯函数测试 + 运行心跳/重启验收覆盖。
   - 每次批量事件只弹一个浮窗：既有设计，未改变。
+
+## 6. 本轮最终验收（R9–R15，2026-11-11 16:25）
+
+- Git：`4791858`（交接基线）→ `f5cc9a7`（R9）→ `b54d344`（R10）→ `d0e65af`（R11）→ `a55b5cc`（R12）→ `d32bfc6`（R13）→ `1aba0a4`（R14）→ `ff10f57`（R15）；本日志的更新单独提交。
+- 构建：`bash scripts/build.sh` 成功（ad-hoc 签名）；`otool` 显示 `minos 13.0`；`codesign --verify --deep --strict` 通过；`Contents/Resources` 的 `receive.py` / `index.js` / `entry.js` 与仓库源文件 sha1 一致。
+- 测试：Python 17 项（接收器 11 + 脚本安全 6）；Node 29 项；Swift 核心断言（含通知回滚、审批关闭、收件箱错误/重建、链接与 DSH 安装）；Swift 计划断言（含部分快照、暂停、不可读文件）。全部通过。
+- 运行：旧实例 PID 64408 已退出；新构建 PID 72657 运行；`heartbeat` 连续在 3 秒内更新，`state.json` 可正常解析（0 个本地计划、48 条记录、47 个去重键，未迁移/未清理）。
+- 数据兼容：`Plan.origin` 只新增可选字段；`Entry` 只新增计算属性，`state.json` / 收件箱 JSON 字段未增删；旧的 `hooks.json` 与 DSH 补丁格式继续兼容。
+- 未做/跳过：
+  - 桌面计划改到更晚时间时的「先过期再恢复」：既有测试明确断言，属产品取舍，未改。
+  - 历史与 `seen` 无限增长、历史页全量渲染：需数据保留策略，未擅自裁剪。
+  - DSH 深链只能聚焦窗口：客户端能力限制。
+  - 同一用户的其他进程理论上可伪造审批回执：已文档化的本地机制边界。
+  - 通知权限撤销/恢复的自动化验证：会改动本机系统设置，留给人工验收（R15 已写明步骤）。
+  - macOS 13 实机启动：本机为 macOS 26，已验证产物 `minos` 与 `Info.plist` 一致，未做旧系统实机验收。
+  - UI 自动化测试仍未引入；交互修复由纯函数断言 + 构建 + 运行验收覆盖。
+  - 每次批量事件只弹一个浮窗：既有设计。
