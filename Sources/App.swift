@@ -216,7 +216,7 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
     func open(_ e: Entry) {
         guard !e.link.isEmpty else { showMain?(); return }
         guard Links.valid(e.link), let url = URL(string: e.link), NSWorkspace.shared.open(url) else {
-            error = "无法打开任务。请复制任务标识，在 ChatGPT/Codex 中查找。"; showMain?(); return
+            error = "无法打开任务。请复制任务标识，在 ChatGPT / Codex / DSH 中查找。"; showMain?(); return
         }
     }
     func toggleLogin(_ value: Bool) {
@@ -236,7 +236,9 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
     func installHooks() {
         do {
             let script = root.appendingPathComponent("receive.py")
-            let original = Bundle.main.url(forResource: "receive", withExtension: "py")!
+            guard let original = Bundle.main.url(forResource: "receive", withExtension: "py") else {
+                throw NSError(domain: "发行包缺少 hook 接收器，请重新构建。", code: 1)
+            }
             try Data(contentsOf: original).write(to: script, options: .atomic)
             let config = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/hooks.json")
             var object: [String: Any] = [:]

@@ -23,13 +23,13 @@ struct PlanEditor: View {
             if !Links.valid(link) { Text("请填写 ChatGPT HTTPS 对话链接或 Codex 任务链接。").font(.caption).foregroundStyle(.red) }
             Text("如果今天的时间已过，保存后立即补提醒。每个计划每天只生成一条记录。").font(.caption).foregroundStyle(.secondary)
             HStack { Spacer(); Button("取消") { dismiss() }; Button("保存计划") {
-                let parts = Calendar.current.dateComponents([.hour, .minute], from: time)
-                var p = Plan(title: title.trimmingCharacters(in: .whitespacesAndNewlines), notes: notes, hour: parts.hour!, minute: parts.minute!, weekdays: Array(days), link: link)
+                let parts = PlanTime.components(time)
+                var p = Plan(title: title.trimmingCharacters(in: .whitespacesAndNewlines), notes: notes, hour: parts.hour, minute: parts.minute, weekdays: Array(days), link: link)
                 if let old = plan { p.id = old.id; p.created = old.created; p.enabled = old.enabled }
                 if let i = hub.data.plans.firstIndex(where: { $0.id == p.id }) { hub.data.plans[i] = p } else { hub.data.plans.append(p) }
                 if hub.save() { hub.tick(); dismiss() }
             }.buttonStyle(.borderedProminent).tint(teal).disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !Links.valid(link)) }
-        }.padding(28).frame(width: 490).background(paper).foregroundStyle(ink).preferredColorScheme(.light).tint(terracotta).onAppear { if let p = plan { title = p.title; notes = p.notes; time = Calendar.current.date(bySettingHour: p.hour, minute: p.minute, second: 0, of: Date())!; days = Set(p.weekdays); link = p.link } }
+        }.padding(28).frame(width: 490).background(paper).foregroundStyle(ink).preferredColorScheme(.light).tint(terracotta).onAppear { if let p = plan { title = p.title; notes = p.notes; time = PlanTime.date(hour: p.hour, minute: p.minute); days = Set(p.weekdays); link = p.link } }
     }
 }
 

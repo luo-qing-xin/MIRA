@@ -24,6 +24,16 @@ private func writeEntryJSON(_ entry: Entry, to inbox: URL) throws -> URL {
         assert(!Schedule.active(done, now: now))
         plan.enabled = false
         assert(Schedule.due(plan, now: now, calendar: calendar) == nil)
+        // The plan editor must not crash when the chosen wall-clock time is skipped
+        // by a DST spring-forward.
+        var pacific = Calendar(identifier: .gregorian)
+        pacific.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        let springForward = pacific.date(from: DateComponents(year: 2026, month: 3, day: 8, hour: 12))!
+        let skipped = PlanTime.date(hour: 2, minute: 30, now: springForward, calendar: pacific)
+        assert(PlanTime.components(skipped, calendar: pacific).hour == 3, "missing DST time moves forward")
+        let ordinary = PlanTime.date(hour: 9, minute: 15, now: springForward, calendar: pacific)
+        let ordinaryParts = PlanTime.components(ordinary, calendar: pacific)
+        assert(ordinaryParts.hour == 9 && ordinaryParts.minute == 15, "an existing time is preserved")
         assert(Links.valid("codex://threads/test"))
         assert(Links.valid("dsh://open"))
         assert(!Links.valid("dsh://open/../../etc/passwd"))

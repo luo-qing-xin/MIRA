@@ -48,6 +48,22 @@ struct HubData: Codable {
     var seen: Set<String> = []
     var lastEvent: Date?
 }
+enum PlanTime {
+    /// Picker date for an existing plan. During a DST spring-forward the wall-clock
+    /// time can be missing; move to the next valid instant instead of crashing.
+    static func date(hour: Int, minute: Int, now: Date = Date(), calendar: Calendar = .current) -> Date {
+        calendar.date(bySettingHour: hour, minute: minute, second: 0, of: now,
+                      matchingPolicy: .nextTime, repeatedTimePolicy: .first, direction: .forward) ?? now
+    }
+
+    /// Hour and minute of the picker value, with a neutral fallback if the calendar
+    /// cannot produce components.
+    static func components(_ value: Date, calendar: Calendar = .current) -> (hour: Int, minute: Int) {
+        let parts = calendar.dateComponents([.hour, .minute], from: value)
+        return (parts.hour ?? 0, parts.minute ?? 0)
+    }
+}
+
 enum Schedule {
     static func due(_ plan: Plan, now: Date, calendar: Calendar = .current) -> Entry? {
         guard plan.enabled, plan.weekdays.isEmpty || plan.weekdays.contains(calendar.component(.weekday, from: now)) else { return nil }

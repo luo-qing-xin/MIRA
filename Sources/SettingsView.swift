@@ -15,7 +15,7 @@ extension HubView {
             VStack(alignment: .leading, spacing: 14) {
                 Label("DeepSeek Harness 桌面端", systemImage: "sparkle").font(.headline)
                 Text(hub.dshStatus).foregroundStyle(teal)
-                Text("接收 DSH 轮次结束、待确认与待补充信息事件。插件只观察，不参与审批；点击提醒会把 DSH 窗口切到前台。").font(.callout).foregroundStyle(.secondary)
+                Text("接收 DSH 轮次结束、待确认与待补充信息事件。MIRA 运行时可在弹窗选择「允许一次 / 拒绝」；超时或选择「去 DSH 处理」会交还 DSH 原生对话框。点击提醒会把 DSH 窗口切到前台。").font(.callout).foregroundStyle(.secondary)
                 HStack {
                     Button(hub.dshInstalled ? "更新 DSH 连接" : "配置 DSH 连接") { hub.installDSH() }
                     if hub.dshInstalled { Button("移除") { hub.removeDSH() } }

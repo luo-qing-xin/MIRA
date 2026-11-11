@@ -33,14 +33,14 @@ MIRA · AI Task Hub 0.2：macOS 菜单栏 AI 任务提醒中心。本地优先�
 | Q1 | P1 | 收件箱里任一 JSON 解码失败或链接非法时，`tick` 只写错误横幅、文件永不清理，每 3 秒重复报错（App.swift catch 分支） | 移入 `inbox/rejected/` 隔离并保留原件 | ✅ R2 |
 | Q2 | P1 | 补丁层为 `[]`（官方推荐的禁用写法）时，安装会直接追加行，产生非法 YAML，DSH 无法启动（`DSHLink.install`） | 识别空层并替换 | ✅ R1 |
 | Q3 | P1 | `DSHLink.remove` 在补丁行格式被改过、无法精确移除时仍删除插件目录，补丁仍引用缺失模块 → DSH 启动失败 | 先改补丁并复核，无法复核则抛错保留目录 | ✅ R1 |
-| Q4 | P0/P1 | `PlanEditor` 用 `date(bySettingHour:)!` 强制解包；夏令时跳变时该时刻可能不存在 → 打开计划编辑器崩溃 | 增加安全构造与回退 | 待做 |
+| Q4 | P0/P1 | `PlanEditor` 用 `date(bySettingHour:)!` 强制解包；夏令时跳变时该时刻可能不存在 → 打开计划编辑器崩溃 | 增加安全构造与回退 | ✅ R3 |
 | Q5 | P3 | `DSHLink.installed` 用子串匹配，`id: mira-bridge-2` 会被误判为已安装 | 改为整行匹配 | ✅ R1 |
 | Q6 | P3 | 备份文件名精确到秒，同一秒内两次安装/移除会覆盖上一份备份 | 冲突时追加序号 | ✅ R1 |
 | Q7 | P3 | `receive.py` 对 `cwd=/` 生成空项目名，显示为 `Codex · ` | 空名回退 | 待做 |
-| Q8 | P3 | `Hub.open` 失败文案只提 ChatGPT/Codex，DSH 用户被误导 | 补上 DSH | 待做 |
+| Q8 | P3 | `Hub.open` 失败文案只提 ChatGPT/Codex，DSH 用户被误导 | 补上 DSH | ✅ R3 |
 | Q9 | P2 | `tick` 每处理一个收件箱文件就整份保存 `state.json`，批量事件时写放大 | 收集后单次保存 | ✅ R2 |
-| Q10 | P1 | `installHooks` 对 `Bundle.main.url(forResource:"receive", ...)!` 强制解包，资源缺失时配置连接直接崩溃 | 改为可抛出错误的 guard | 待做 |
-| Q11 | P3 | 设置页与安装脚本注释仍写「插件只观察，不参与审批」，与已实现的审批接管矛盾 | 更新为真实行为 | 待做 |
+| Q10 | P1 | `installHooks` 对 `Bundle.main.url(forResource:"receive", ...)!` 强制解包，资源缺失时配置连接直接崩溃 | 改为可抛出错误的 guard | ✅ R3 |
+| Q11 | P3 | 设置页与安装脚本注释仍写「插件只观察，不参与审批」，与已实现的审批接管矛盾 | 更新为真实行为 | ✅ R3 |
 | Q12 | P2 | `Hub.start` 用 `Timer.scheduledTimer` 只进 default 模式；拖拽窗口/菜单跟踪期间提醒轮询暂停 | 注册到 `.common` 模式 | 待做 |
 | Q13 | P3 | `receive.py` 把 `session_id: null` 变成字符串 `"None"`；非字符串 `cwd` 会抛异常丢失事件 | 类型与空值守卫 | 待做 |
 | Q14 | P2 | 卸载脚本末尾 `"已删除 $DEST。…"` 中变量名与中文标点粘连，`set -u` 下每次卸载都以 unbound variable 退出 | 改为 `${DEST}` | ✅ R1 |
@@ -79,6 +79,19 @@ MIRA · AI Task Hub 0.2：macOS 菜单栏 AI 任务提醒中心。本地优先�
 - 行为兼容性：提醒内容、状态、去重键、24 小时归档、同会话合并规则均未改变；差异仅在坏文件从「永久重试」变为「隔离保留」，以及状态写盘次数减少。
 - 剩余风险：批量保存把「每文件提交」改成「每轮提交」；已用 consumed 清单 + 保存成功后才删除来保证崩溃/失败可重试。保存失败后的无新事件重试见 Q16。
 
+### R3 · 2026-11-11 · 崩溃防护与失真文案（Q4/Q8/Q10/Q11）
+
+- 根因：计划编辑器用 `date(bySettingHour:)!` 强制解包，DST 跳变时该墙钟时间可能不存在；`installHooks` 对发行包资源强制解包；设置页仍宣称 DSH 插件「不参与审批」，与已实现的审批接管矛盾；打开失败的提示漏掉 DSH。
+- 修改：
+  - `Core.swift` 新增 `PlanTime`：用 `matchingPolicy: .nextTime` 取编辑器时间，缺失时刻前移到下一个有效时刻；`components` 对缺失分量回退 0。`PlanEditor` 改用该辅助函数，删除两处强制解包。
+  - `installHooks` 资源缺失时抛可读错误，不再崩溃。
+  - 设置页 DSH 说明改为真实审批行为；`Hub.open` 失败提示补上 DSH。
+- 验证：
+  - Swift 断言新增 DST 用例（America/Los_Angeles 2026-03-08 02:30 前移到 03:00；普通 09:15 保持不变）→ PASS。
+  - `bash scripts/build.sh` 成功；Python 7 项、Node 28 项通过。
+- 行为兼容性：只影响异常/文案路径，正常计划时间与审批流程不变；未改任何界面布局。
+- 剩余风险：DST 回拨的重复时刻沿用系统默认 `.first`，与修改前一致。
+
 ## 4. 恢复入口
 
 ```sh
@@ -89,4 +102,4 @@ node --test tests/test_dsh_bridge.mjs
 swiftc -module-cache-path /tmp/mira-swift-cache Sources/Core.swift tests/CoreTests.swift -o /tmp/mira-core-tests && /tmp/mira-core-tests
 ```
 
-下一项：Q4 / Q10 / Q11（崩溃与文案），随后 Q16、Q12、Q13、Q7、Q8。
+下一项：Q16（保存失败重试）与 Q12（定时器模式），随后 Q7 / Q13（receive.py）。
