@@ -46,8 +46,67 @@ import Foundation
             let input = source.replacingOccurrences(of: "FREQ=WEEKLY;BYHOUR=16;BYMINUTE=0;BYDAY=FR", with: rule)
             do { _ = try DesktopSchedules.parse(input); fatalError("Unsupported rule accepted") } catch {}
         }
-        let real = try DesktopSchedules.load(directory: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/automations"))
-        print("PASS: source parsing, paused schedules, weekdays, missed occurrence, stable identity, expiry and unsupported-rule rejection")
-        print("Local schedules: \(real.plans.map(\.title)), issues: \(real.issues)")
+        // A single unreadable plan must not freeze syncing for every other plan,
+        // and its own reminder must not be mistaken for a deleted plan.
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("mira-schedules-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let automations = root.appendingPathComponent("automations")
+        for (folder, text) in [
+            ("review", source),
+            ("monthly", """
+            id = "monthly"
+            name = "月度回顾"
+            status = "ACTIVE"
+            rrule = "RRULE:FREQ=MONTHLY;BYHOUR=16;BYMINUTE=0"
+            """),
+            ("paused", source.replacingOccurrences(of: "id = \"review\"", with: "id = \"paused\"")
+                .replacingOccurrences(of: "ACTIVE", with: "PAUSED")),
+        ] {
+            let dir = automations.appendingPathComponent(folder)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try text.write(to: dir.appendingPathComponent("automation.toml"), atomically: true, encoding: .utf8)
+        }
+        let snapshot = try DesktopSchedules.load(directory: automations)
+        assert(snapshot.plans.count == 1 && snapshot.issues.count == 1, "readable plans still load beside a broken one")
+        assert(snapshot.unavailable == ["desktop-monthly"], "unreadable plan id is recovered")
+        assert(DesktopSchedules.planID(source) == "desktop-review")
+        assert(DesktopSchedules.planID("name = \"x\"") == nil)
+        var monthlyPlan = Plan(title: "月度回顾", notes: "", hour: 16, minute: 0, weekdays: [6], link: "")
+        monthlyPlan.id = "desktop-monthly"
+        var pausedPlan = plan; pausedPlan.id = "desktop-paused"
+        let monthlyEntry = Schedule.due(monthlyPlan, now: friday, calendar: calendar)!
+        let pausedEntry = Schedule.due(pausedPlan, now: friday, calendar: calendar)!
+        var mixed = [monthlyEntry, pausedEntry]
+        let reconciled = DesktopSchedules.reconcile(&mixed, plans: [], unavailable: snapshot.unavailable, now: friday, calendar: calendar)
+        assert(reconciled == [pausedEntry.id], "only the known-removed plan is cancelled")
+        assert(Schedule.active(mixed[0], now: friday), "an unreadable plan keeps its reminder")
+        assert(!Schedule.active(mixed[1], now: friday), "a paused plan is still withdrawn")
+        _ = DesktopSchedules.reconcile(&mixed, plans: [], unavailable: [], now: friday, calendar: calendar)
+        assert(!Schedule.active(mixed[0], now: friday), "removing the unreadable file finally withdraws it")
+        // Readable plans keep updating even while another file is broken.
+        var renamed = plan; renamed.title = "每周回顾 · 已改名"
+        var live = [due]
+        _ = DesktopSchedules.reconcile(&live, plans: [renamed], unavailable: snapshot.unavailable, now: friday, calendar: calendar)
+        assert(live[0].title == "每周回顾 · 已改名")
+        // A file that cannot be read hides its id; such a snapshot must not
+        // cancel reminders that merely look missing.
+        let secretDir = automations.appendingPathComponent("secret")
+        try FileManager.default.createDirectory(at: secretDir, withIntermediateDirectories: true)
+        let secretFile = secretDir.appendingPathComponent("automation.toml")
+        try "id = \"secret\"\nstatus = \"ACTIVE\"\nrrule = \"RRULE:FREQ=DAILY;BYHOUR=9;BYMINUTE=0\"\n".write(to: secretFile, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: secretFile.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: secretFile.path) }
+        let partial = try DesktopSchedules.load(directory: automations)
+        assert(partial.plans.count == 1 && partial.issues.count == 2, "one unreadable file is reported")
+        assert(!partial.removalsAllowed, "an unidentified unreadable plan blocks removals")
+        var secretPlan = plan; secretPlan.id = "desktop-secret"
+        var retained = [Schedule.due(secretPlan, now: friday, calendar: calendar)!]
+        let none = DesktopSchedules.reconcile(&retained, plans: [], unavailable: partial.unavailable, allowRemovals: partial.removalsAllowed, now: friday, calendar: calendar)
+        assert(none.isEmpty && Schedule.active(retained[0], now: friday), "no reminder is cancelled from an unreadable snapshot")
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: secretFile.path)
+        try FileManager.default.removeItem(at: secretDir)
+        let complete = try DesktopSchedules.load(directory: automations)
+        assert(complete.removalsAllowed)
+        print("PASS: source parsing, paused schedules, weekdays, missed occurrence, stable identity, expiry, partial-snapshot reconciliation and unsupported-rule rejection")
     }
 }

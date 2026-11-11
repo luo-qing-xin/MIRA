@@ -3,10 +3,14 @@ import Foundation
 /// Read-only adapter for desktop automation files. Unsupported recurrence rules
 /// are reported, never silently converted into daily reminders.
 enum DesktopSchedules {
-    /// Refresh only today's unfinished occurrences. A transient read error must
-    /// not cancel stored reminders; callers use this only for a complete snapshot.
-    static func reconcile(_ entries: inout [Entry], plans: [Plan], now: Date, calendar: Calendar = .current) -> [String] {
+    /// Refresh only today's unfinished occurrences. Entries whose source file
+    /// exists but could not be parsed are listed in `unavailable` and kept: an
+    /// incomplete snapshot must not look like a deleted plan. When a file could
+    /// not be read at all its id is unknown, so `allowRemovals` stays false and
+    /// no stored reminder is cancelled from that snapshot.
+    static func reconcile(_ entries: inout [Entry], plans: [Plan], unavailable: Set<String> = [], allowRemovals: Bool = true, now: Date, calendar: Calendar = .current) -> [String] {
         let current = Dictionary(plans.map { (Schedule.occurrenceID($0, now: now, calendar: calendar), $0) }, uniquingKeysWith: { first, _ in first })
+        let unavailablePrefixes = unavailable.map { "plan-" + $0 + "-" }
         var changed: [String] = []
         for i in entries.indices {
             let old = entries[i]
@@ -23,7 +27,11 @@ enum DesktopSchedules {
                     }
                     changed.append(old.id)
                 }
-            } else if Schedule.active(old, now: now) {
+            } else if unavailablePrefixes.contains(where: { old.id.hasPrefix($0) }) {
+                // The plan file is still there but unreadable: keep today's
+                // reminder instead of treating the parse failure as a deletion.
+                continue
+            } else if Schedule.active(old, now: now), allowRemovals {
                 entries[i].expires = now
                 entries[i].snooze = nil
                 changed.append(old.id)
@@ -34,6 +42,11 @@ enum DesktopSchedules {
     struct Snapshot {
         var plans: [Plan] = []
         var issues: [String] = []
+        /// Plan ids that exist on disk but could not be interpreted.
+        var unavailable: Set<String> = []
+        /// False when an unreadable file made the set of existing plans
+        /// unknowable; missing entries must not be treated as deletions.
+        var removalsAllowed = true
     }
 
     static func load(directory: URL) throws -> Snapshot {
@@ -43,13 +56,37 @@ enum DesktopSchedules {
         for folder in try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).sorted(by: { $0.path < $1.path }) {
             let file = folder.appendingPathComponent("automation.toml")
             guard fm.fileExists(atPath: file.path) else { continue }
+            let text: String
             do {
-                snapshot.plans += try parse(String(contentsOf: file, encoding: .utf8))
+                text = try String(contentsOf: file, encoding: .utf8)
             } catch {
                 snapshot.issues.append("\(folder.lastPathComponent)：\(error.localizedDescription)")
+                snapshot.removalsAllowed = false
+                continue
+            }
+            do {
+                snapshot.plans += try parse(text)
+            } catch {
+                snapshot.issues.append("\(folder.lastPathComponent)：\(error.localizedDescription)")
+                // Recover just the id so this plan's reminder is not cancelled
+                // while other, readable plans keep syncing normally.
+                if let id = planID(text) { snapshot.unavailable.insert(id) }
+                else { snapshot.removalsAllowed = false }
             }
         }
         return snapshot
+    }
+
+    /// Plan id as stored in `Entry.id`, extracted from raw TOML even when the
+    /// recurrence rule is unsupported and `parse` refuses the file.
+    static func planID(_ text: String) -> String? {
+        let pattern = "(?m)^id\\s*=\\s*(\"(?:[^\"\\\\\\n]|\\\\.)*\")\\s*$"
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let range = Range(match.range(at: 1), in: text),
+              let raw = try? JSONDecoder().decode(String.self, from: Data(text[range].utf8)),
+              !raw.isEmpty else { return nil }
+        return "desktop-" + raw
     }
 
     static func parse(_ text: String) throws -> [Plan] {

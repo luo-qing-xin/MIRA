@@ -41,7 +41,9 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
     @Published var desktopPlans: [Plan] = []
     @Published var scheduleStatus = "等待同步桌面定时任务"
     var lastScheduleSync = Date.distantPast
-    var scheduleSnapshotComplete = false
+    var desktopUnavailable: Set<String> = []
+    var desktopRemovalsAllowed = true
+    var scheduleLoaded = false
 
     var allPlans: [Plan] { data.plans + desktopPlans }
 
@@ -51,12 +53,16 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
         do {
             let snapshot = try DesktopSchedules.load(directory: base.appendingPathComponent("automations"))
             desktopPlans = snapshot.plans
-            scheduleSnapshotComplete = snapshot.issues.isEmpty
+            desktopUnavailable = snapshot.unavailable
+            desktopRemovalsAllowed = snapshot.removalsAllowed
+            scheduleLoaded = true
             scheduleStatus = "已同步 \(snapshot.plans.count) 项桌面计划 · " + Date().formatted(date: .omitted, time: .shortened)
             if !snapshot.issues.isEmpty { scheduleStatus += "\n" + snapshot.issues.joined(separator: "\n") }
         } catch {
             desktopPlans = []
-            scheduleSnapshotComplete = false
+            desktopUnavailable = []
+            desktopRemovalsAllowed = false
+            scheduleLoaded = false
             scheduleStatus = "桌面计划读取失败：\(error.localizedDescription)"
         }
         lastScheduleSync = Date()
@@ -170,7 +176,7 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
         let drained = Inbox.drain(inbox: inbox, data: &data, now: now, decoder: decoder)
         if !drained.errors.isEmpty { error = drained.errors[drained.errors.count - 1] }
         var changed = drained.changed
-        let revised = scheduleSnapshotComplete ? DesktopSchedules.reconcile(&data.entries, plans: desktopPlans, now: now) : []
+        let revised = scheduleLoaded ? DesktopSchedules.reconcile(&data.entries, plans: desktopPlans, unavailable: desktopUnavailable, allowRemovals: desktopRemovalsAllowed, now: now) : []
         changed = changed || !revised.isEmpty
         for plan in allPlans {
             if let entry = Schedule.due(plan, now: now), !data.entries.contains(where: { $0.id == entry.id }) {
