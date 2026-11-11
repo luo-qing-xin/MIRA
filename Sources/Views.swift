@@ -51,7 +51,7 @@ struct TaskRow: View {
                 Spacer()
                 StatusLabel(text: history ? entry.historyStatus : entry.status)
             }
-            Text(entry.title).font(compact ? .system(size: 16, weight: .semibold) : editorial(24))
+            Text(entry.displayTitle).font(compact ? .system(size: 16, weight: .semibold) : editorial(24))
                 .foregroundStyle(ink).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
             if !entry.body.isEmpty {
                 Text(entry.body).font(.system(size: 13)).foregroundStyle(quiet).lineSpacing(4)
@@ -322,7 +322,7 @@ struct ReminderView: View {
                 .frame(width: 38, height: 38).background(terracotta).clipShape(RoundedRectangle(cornerRadius: 9))
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .top, spacing: 12) {
-                    Text(entry.title).font(.system(size: 16, weight: .semibold)).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                    Text(entry.displayTitle).font(.system(size: 16, weight: .semibold)).lineLimit(3).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                     Button(action: {
                         if let decision = ReminderClose.decision(for: entry) { _ = hub.decide(entry, decision) }

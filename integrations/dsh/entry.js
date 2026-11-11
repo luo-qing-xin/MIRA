@@ -57,17 +57,38 @@ export function questionEntryId(sessionId, questionId) {
     .digest("hex");
 }
 
+/** Prompt headings and meta labels are not part of the task name. */
+function cleanTitle(value) {
+  let text = String(value ?? "").replace(/\s+/g, " ").trim();
+  text = text.replace(/^#{1,6}\s+/, "");
+  text = text.replace(/^(?:[-*+]\s+|>\s+)/, "");
+  text = text.replace(/^任务\s*[：:]\s*/, "");
+  return text.trim();
+}
+
+/** Clip to a code-point budget, keeping a whole word when one is close by. */
+function clipTitle(value, limit) {
+  const characters = Array.from(value);
+  if (characters.length <= limit) return value;
+  let kept = characters.slice(0, limit);
+  const space = kept.join("").lastIndexOf(" ");
+  if (space > 0 && space >= Math.floor(limit * 0.6)) kept = kept.slice(0, space);
+  return kept.join("").trimEnd() + "…";
+}
+
 function displayTitle(title, sessionId, cwd, turn) {
-  const named = typeof title === "string" ? title.trim() : "";
+  const named = cleanTitle(title);
   const round = Number.isSafeInteger(turn) && turn > 0 ? " · 第 " + turn + " 轮" : "";
   const fallback = projectName(cwd) + (round || " · 任务 " + String(sessionId).slice(0, 8));
-  return (named || fallback).slice(0, 80);
+  return clipTitle(named || fallback, 80);
 }
 
 /** Short, readable task summary used when no session title exists yet. */
 export function summarize(text, limit = 32) {
-  const line = String(text ?? "").replace(/\s+/g, " ").trim();
-  return line.length > limit ? line.slice(0, limit) + "…" : line;
+  // Prefer the authored first paragraph: later paragraphs are usually the
+  // detailed instructions and produce a name that starts mid-sentence.
+  const paragraph = String(text ?? "").split(/\n\s*\n/).map((part) => part.trim()).find(Boolean) ?? "";
+  return clipTitle(cleanTitle(paragraph), limit);
 }
 
 function oneLine(value, limit = 120) {

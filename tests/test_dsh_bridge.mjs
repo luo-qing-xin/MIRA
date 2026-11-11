@@ -597,3 +597,158 @@ test("synthetic context messages are not used as task names", () => {
   const entry = JSON.parse(readFileSync(join(root, "inbox", file), "utf8"));
   assert.equal(entry.title, "MIRA · 第 2 轮");
 });
+
+test("summarize cleans prompt markup and prefers the first paragraph", () => {
+  assert.equal(
+    summarize("# 任务：对当前项目进行长期自主迭代优化\n\n你是一名资深软件架构师。"),
+    "对当前项目进行长期自主迭代优化",
+  );
+  assert.equal(
+    summarize("任务：修复登录\n第二行说明\n\n后面的段落不进入标题"),
+    "修复登录 第二行说明",
+  );
+  assert.equal(summarize("## 每周回顾"), "每周回顾");
+  assert.equal(summarize("Short task"), "Short task");
+  assert.equal(summarize(""), "");
+  assert.equal(
+    summarize("这是一个明显超过十个字符的任务说明文字", 10),
+    "这是一个明显超过十个…",
+  );
+  assert.equal(
+    summarize("Fix the login button contrast issue today", 20),
+    "Fix the login…",
+    "a Latin title cuts on a word boundary",
+  );
+});
+
+test("cleans a raw prompt heading passed as a title", () => {
+  const entry = buildEntry({
+    sessionId: "session-1234-abcd",
+    cwd: "/Users/yunye/MIRA",
+    turn: 2,
+    reason: { kind: "completed" },
+    time: TIME,
+    title: "# 任务：对当前项目进行长期",
+  });
+  assert.equal(entry.title, "对当前项目进行长期");
+});
+
+test("prefers the full prompt over a DSH fallback title", () => {
+  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
+  const handlers = new Map();
+  apply(
+    {
+      on: (event, handler) => handlers.set(event, handler),
+      logger: { warn: () => {} },
+      sessionTitle: { get: () => ({ title: "# 任务：对当前项目进行长期", source: { kind: "fallback" } }) },
+    },
+    { dataDir: root },
+  );
+  const session = sessionWithEvents([
+    {
+      type: "user/message",
+      data: {
+        source: { kind: "user" },
+        content: [{ type: "text", text: "# 任务：对当前项目进行长期自主迭代优化\n\n你是一名资深软件架构师。" }],
+      },
+    },
+  ]);
+  handlers.get("session/event")(session, {
+    type: "turn/end",
+    time: TIME,
+    data: { turn: 1, reason: { kind: "completed" } },
+  });
+  const [file] = readdirSync(join(root, "inbox"));
+  const entry = JSON.parse(readFileSync(join(root, "inbox", file), "utf8"));
+  assert.equal(entry.title, "对当前项目进行长期自主迭代优化");
+});
+
+test("uses a generated title instead of the prompt", () => {
+  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
+  const handlers = new Map();
+  apply(
+    {
+      on: (event, handler) => handlers.set(event, handler),
+      logger: { warn: () => {} },
+      sessionTitle: { get: () => ({ title: "设计 AI 任务与提醒中心", source: { kind: "provider" } }) },
+    },
+    { dataDir: root },
+  );
+  const session = sessionWithEvents([
+    { type: "user/message", data: { source: { kind: "user" }, content: [{ type: "text", text: "请帮我重构登录页" }] } },
+  ]);
+  handlers.get("session/event")(session, {
+    type: "turn/end",
+    time: TIME,
+    data: { turn: 1, reason: { kind: "completed" } },
+  });
+  const [file] = readdirSync(join(root, "inbox"));
+  const entry = JSON.parse(readFileSync(join(root, "inbox", file), "utf8"));
+  assert.equal(entry.title, "设计 AI 任务与提醒中心");
+});
+
+test("cleans a fallback title when no prompt is readable", () => {
+  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
+  const handlers = new Map();
+  apply(
+    {
+      on: (event, handler) => handlers.set(event, handler),
+      logger: { warn: () => {} },
+      sessionTitle: { get: () => ({ title: "# 任务：对当前项目进行长期", source: { kind: "fallback" } }) },
+    },
+    { dataDir: root },
+  );
+  handlers.get("session/event")(session(), {
+    type: "turn/end",
+    time: TIME,
+    data: { turn: 1, reason: { kind: "completed" } },
+  });
+  const [file] = readdirSync(join(root, "inbox"));
+  const entry = JSON.parse(readFileSync(join(root, "inbox", file), "utf8"));
+  assert.equal(entry.title, "对当前项目进行长期");
+});
+
+test("a fallback title event does not pin the truncated name", () => {
+  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
+  const handlers = new Map();
+  apply(
+    { on: (event, handler) => handlers.set(event, handler), logger: { warn: () => {} } },
+    { dataDir: root },
+  );
+  const session = sessionWithEvents([
+    {
+      type: "user/message",
+      data: {
+        source: { kind: "user" },
+        content: [{ type: "text", text: "# 任务：对当前项目进行长期自主迭代优化\n\n你是一名资深软件架构师。" }],
+      },
+    },
+  ]);
+  handlers.get("session/event")(session, {
+    type: "session/title",
+    time: TIME,
+    data: { title: "# 任务：对当前项目进行长期", source: { kind: "fallback" } },
+  });
+  handlers.get("session/event")(session, {
+    type: "turn/end",
+    time: TIME,
+    data: { turn: 1, reason: { kind: "completed" } },
+  });
+  const first = JSON.parse(readFileSync(join(root, "inbox", readdirSync(join(root, "inbox"))[0]), "utf8"));
+  assert.equal(first.title, "对当前项目进行长期自主迭代优化");
+
+  handlers.get("session/event")(session, {
+    type: "session/title",
+    time: TIME,
+    data: { title: "长期迭代优化任务", source: { kind: "provider" } },
+  });
+  handlers.get("session/event")(session, {
+    type: "turn/end",
+    time: TIME,
+    data: { turn: 2, reason: { kind: "completed" } },
+  });
+  const titles = readdirSync(join(root, "inbox"))
+    .sort()
+    .map((file) => JSON.parse(readFileSync(join(root, "inbox", file), "utf8")).title);
+  assert.ok(titles.includes("长期迭代优化任务"), "a provider title replaces the prompt summary");
+});

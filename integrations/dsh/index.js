@@ -113,6 +113,8 @@ export function apply(ctx, config) {
   function titleOf(session) {
     const cached = titles.get(session.id);
     if (cached) return cached;
+    let serviceTitle;
+    let serviceFallback = false;
     try {
       // Do not declare an inject dependency: the bridge must keep working in
       // profiles without the title service, and cordis' object form maps
@@ -121,14 +123,20 @@ export function apply(ctx, config) {
       const snapshot = service?.get?.(session);
       const title = typeof snapshot?.title === "string" ? snapshot.title.trim() : "";
       if (title) {
-        titles.set(session.id, title);
-        return title;
+        serviceTitle = title;
+        serviceFallback = snapshot?.source?.kind === "fallback";
+        if (!serviceFallback) {
+          titles.set(session.id, title);
+          return title;
+        }
       }
     } catch (error) {
       ctx.logger?.warn?.(`mira-bridge: title lookup failed: ${error?.message ?? error}`);
     }
-    // Titles are generated asynchronously; before that, the first user message
-    // is the best human-readable name for the task.
+    // DSH's deterministic fallback is the first prompt clipped by a byte budget
+    // and still carries its Markdown heading. The session log has the full first
+    // paragraph, which is a better task name and keeps working while the title
+    // provider finishes.
     try {
       const prompt = firstPrompt(session);
       const summary = prompt ? summarize(prompt) : "";
@@ -139,14 +147,22 @@ export function apply(ctx, config) {
     } catch (error) {
       ctx.logger?.warn?.(`mira-bridge: prompt summary failed: ${error?.message ?? error}`);
     }
+    if (serviceTitle) {
+      titles.set(session.id, serviceTitle);
+      return serviceTitle;
+    }
     return undefined;
   }
 
   ctx.on("session/event", (session, event) => {
     try {
       if (event.type === "session/title") {
-        if (typeof event.data?.title === "string" && event.data.title.trim()) {
-          titles.set(session.id, event.data.title);
+        const title = typeof event.data?.title === "string" ? event.data.title.trim() : "";
+        // A deterministic fallback is only the first prompt clipped by DSH's
+        // byte budget. Do not pin it in the cache: titleOf prefers the fuller
+        // prompt paragraph until a provider or user title arrives.
+        if (title && event.data?.source?.kind !== "fallback") {
+          titles.set(session.id, title);
         }
         return;
       }

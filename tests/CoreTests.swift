@@ -22,6 +22,18 @@ private func writeEntryJSON(_ entry: Entry, to inbox: URL) throws -> URL {
         let restoredEnd = try JSONDecoder().decode(Entry.self, from: JSONEncoder().encode(ended))
         assert(restoredEnd.notified && !Schedule.needsAttention(restoredEnd, now: now), "restart preserves notification dedup and auto-archive")
         assert(restoredEnd.historyStatus == "本轮结束", "auto-archiving does not claim manual handling or expiry")
+        // Prompt-derived titles may arrive as Markdown headings; clean them for
+        // display without rewriting the stored history.
+        assert(Titles.display("# 任务：对当前项目进行长期") == "对当前项目进行长期")
+        assert(Titles.display("##   修复登录  ") == "修复登录")
+        assert(Titles.display("- 整理周报") == "整理周报")
+        assert(Titles.display("> 任务: 上线检查") == "上线检查")
+        assert(Titles.display("任务中心改版") == "任务中心改版", "a label without a colon is part of the name")
+        assert(Titles.display("#") == "#", "an empty cleanup keeps the original")
+        assert(Titles.display("设计 AI 任务与提醒中心") == "设计 AI 任务与提醒中心")
+        let headed = Entry(id: "headed", title: "# 任务：对当前项目进行长期", body: "", source: "DSH · MIRA", status: "本轮结束", link: "dsh://open", date: now)
+        assert(headed.displayTitle == "对当前项目进行长期")
+        assert(headed.title == "# 任务：对当前项目进行长期", "display cleanup never rewrites the stored title")
         for status in ["待确认", "待补充信息", "待完成", "任务失败"] {
             var actionable = ended; actionable.status = status
             assert(Schedule.needsAttention(actionable, now: now) && !Schedule.inHistory(actionable, now: now), "actionable states remain pending")

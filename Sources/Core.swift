@@ -38,6 +38,24 @@ struct Entry: Codable, Identifiable {
     var canSnooze: Bool {
         status == "待确认" || status == "待补充信息" || status == "待完成"
     }
+
+    /// Display-only cleanup for prompt-derived titles. The stored title stays
+    /// untouched, so history is not rewritten.
+    var displayTitle: String { Titles.display(title) }
+}
+enum Titles {
+    /// DSH's deterministic title fallback copies the first prompt verbatim,
+    /// including its Markdown heading and meta label. Strip that noise only at
+    /// display time so existing entries improve without a data migration.
+    static func display(_ value: String) -> String {
+        var text = value.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        for pattern in [#"^#{1,6}\s+"#, #"^(?:[-*+]\s+|>\s+)"#, #"^任务\s*[：:]\s*"#] {
+            text = text.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+        }
+        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? value : cleaned
+    }
 }
 extension HubData {
     /// Close one entry by id. Used by silent dismissal events.

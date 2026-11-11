@@ -236,7 +236,7 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
     var active: [Entry] { data.entries.filter { Schedule.needsAttention($0, now: Date()) }.sorted { a, b in a.status == "待确认" && b.status != "待确认" } }
     func notify(_ e: Entry, popup: Bool = true) {
         let content = UNMutableNotificationContent()
-        content.title = e.status == "待确认" ? "需要你确认 · \(e.title)" : e.title
+        content.title = e.status == "待确认" ? "需要你确认 · \(e.displayTitle)" : e.displayTitle
         content.body = e.body.isEmpty ? e.status : String(e.body.prefix(160))
         content.sound = .default
         content.userInfo = ["entryId": e.id]
