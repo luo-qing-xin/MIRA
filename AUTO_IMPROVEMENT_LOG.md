@@ -152,3 +152,17 @@ swiftc -module-cache-path /tmp/mira-swift-cache Sources/Core.swift tests/CoreTes
 ```
 
 下一项：无新增高收益项；进入全量回归与收尾。
+
+## 5. 最终验收（2026-11-11 12:58）
+
+- 构建：`bash scripts/build.sh` 成功；`codesign --verify --deep --strict` 通过；`Contents/Resources` 的 `receive.py` / `index.js` / `entry.js` 与仓库源文件 sha1 一致。
+- 测试：Python 11 项通过；Node 29 项通过；Swift 断言通过（计划/DST、URL 白名单含大小写、持久化、dismiss、收件箱隔离与批量消费、DSH 安装/移除/备份、审批决定）。
+- 脚本：`bash -n` 通过；临时 `DSH_HOME` 覆盖安装→重复安装→卸载、`[]` 层、应用/脚本交叉卸载、未知格式拒绝、后续行保留、备份去重。
+- 运行：旧实例已退出，新构建 PID 48925 运行；内存镜像 inode 与磁盘一致；`heartbeat` 每 3 秒更新，说明 `.common` 定时轮询正常工作。
+- 数据兼容：`state.json` / 收件箱 JSON 字段未增删，未做迁移；DSH/Codex 安装格式向后兼容（新旧注释块均可卸载）。
+- 未做/跳过（需产品或外部条件）：
+  - 历史与 `seen` 无限增长、历史页全量渲染：涉及数据保留策略，本次不擅自裁剪。
+  - DSH 深链只能聚焦窗口：客户端能力限制。
+  - 同一用户的其他进程理论上可伪造审批回执：已文档化的本地机制边界。
+  - 未引入 UI 自动化测试；`Hub.tick` 通过 `Inbox.drain` 纯函数测试 + 运行心跳/重启验收覆盖。
+  - 每次批量事件只弹一个浮窗：既有设计，未改变。
