@@ -14,7 +14,7 @@
 - 接入方式：在 MIRA 的「连接与设置」点「配置 DSH 连接」，或运行 `bash scripts/install-dsh-bridge.sh`；两者做同一件事——把桥接插件复制到 DSH 桌面 profile 的 `plugins/mira-bridge/`，再往 `cordis.patch.yml` 追加一行 `mira-bridge`。改动前会备份原补丁，其他配置保持不动。
 - 插件只观察 `session/event`：`turn/end` 按原因写入本轮结束 / 任务失败 / 已中断 / 已拦截 / 已达上限；`approval/asked` 写入「待确认」，`approval/decided` 再写一条静默关闭事件；`user-questions/request` 写入「待补充信息」，回答或取消后自动关闭。它不返回批准或拒绝，也不修改会话内容。
 - 关闭事件是一条带 `dismiss` 字段的控制条目：MIRA 只关闭对应提醒并删除它，不会显示、不会再次弹窗。审批与提问的关闭都不依赖模型，也不替你做决定。
-- 子代理会话（`origin: subagent`）不提醒；同一会话的新事件会把旧提醒标为已处理，与 Codex 的合并规则一致。会话标题取自 `session/title`，拿不到时回退为「项目名 · 任务 短标识」。
+- 子代理会话（`origin: subagent`）不提醒；同一会话的新事件会把旧提醒标为已处理，与 Codex 的合并规则一致。标题优先取 DSH 已生成的会话标题（`session/title` 或标题服务），拿不到时回退为「项目名 · 第 N 轮」；审批与提问提醒同样带上当前轮次。
 - 点击提醒打开 `dsh://open`。当前版本的 DSH 深链只聚焦主窗口，没有按会话跳转的参数，所以弹窗同时显示标题和会话短标识，便于回到原窗口定位。
 - 只覆盖 DSH 桌面 profile；`dsh web`、`headless` 等 profile 不会加载该插件。应用设置里的「禁用第三方插件」会备份并停用补丁层，需要重新执行安装脚本。
 - 卸载：`bash scripts/uninstall-dsh-bridge.sh`。

@@ -57,9 +57,10 @@ export function questionEntryId(sessionId, questionId) {
     .digest("hex");
 }
 
-function displayTitle(title, sessionId, cwd) {
+function displayTitle(title, sessionId, cwd, turn) {
   const named = typeof title === "string" ? title.trim() : "";
-  const fallback = projectName(cwd) + " · 任务 " + String(sessionId).slice(0, 8);
+  const round = Number.isSafeInteger(turn) && turn > 0 ? " · 第 " + turn + " 轮" : "";
+  const fallback = projectName(cwd) + (round || " · 任务 " + String(sessionId).slice(0, 8));
   return (named || fallback).slice(0, 80);
 }
 
@@ -77,6 +78,7 @@ export function buildApprovalEntry({
   cwd,
   time,
   title,
+  turn,
   toolName,
   reason,
   approvalId,
@@ -86,7 +88,7 @@ export function buildApprovalEntry({
   const why = oneLine(reason);
   return {
     id: approvalEntryId(sessionId, approvalId),
-    title: displayTitle(title, sessionId, cwd),
+    title: displayTitle(title, sessionId, cwd, turn),
     body: `DSH 需要你确认「${tool}」的操作${why ? "：" + why : "。"} 点击回到原会话处理。`,
     source: ("DSH · " + projectName(cwd)).slice(0, 80),
     status: "待确认",
@@ -99,13 +101,13 @@ export function buildApprovalEntry({
 }
 
 /** Build one reminder covering a pending user-question request. */
-export function buildQuestionEntry({ sessionId, cwd, time, title, questions, link = "dsh://open" }) {
+export function buildQuestionEntry({ sessionId, cwd, time, title, turn, questions, link = "dsh://open" }) {
   const list = Array.isArray(questions) ? questions.filter((q) => q && typeof q === "object") : [];
   const first = oneLine(list[0]?.question);
   const more = list.length > 1 ? `（共 ${list.length} 个问题）` : "";
   return {
     id: questionEntryId(sessionId, list[0]?.id ?? "unknown"),
-    title: displayTitle(title, sessionId, cwd),
+    title: displayTitle(title, sessionId, cwd, turn),
     body: `DSH 需要你补充信息${first ? "：" + first : "。"}${more} 点击回到原会话回答。`,
     source: ("DSH · " + projectName(cwd)).slice(0, 80),
     status: "待补充信息",
@@ -153,7 +155,7 @@ export function buildEntry({ sessionId, cwd, turn, reason, time, title, link = "
   const project = projectName(cwd);
   return {
     id: entryId(sessionId, turn, kind),
-    title: displayTitle(title, sessionId, cwd),
+    title: displayTitle(title, sessionId, cwd, turn),
     body,
     source: ("DSH · " + project).slice(0, 80),
     status,

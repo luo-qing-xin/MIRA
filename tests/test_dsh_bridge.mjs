@@ -104,7 +104,7 @@ test("keeps ids stable for one turn and distinct across turns", () => {
   );
 });
 
-test("falls back to project plus short id when no title exists", () => {
+test("falls back to project plus round when no title exists", () => {
   const entry = buildEntry({
     sessionId: "session-1234-abcd",
     cwd: "/Users/yunye/项目",
@@ -112,7 +112,7 @@ test("falls back to project plus short id when no title exists", () => {
     reason: { kind: "completed" },
     time: TIME,
   });
-  assert.equal(entry.title, "项目 · 任务 session-");
+  assert.equal(entry.title, "项目 · 第 1 轮");
   const blank = buildEntry({
     sessionId: "session-1234-abcd",
     cwd: "/Users/yunye/项目",
@@ -122,6 +122,13 @@ test("falls back to project plus short id when no title exists", () => {
     title: "   ",
   });
   assert.equal(blank.title, entry.title);
+  assert.equal(buildEntry({
+    sessionId: "session-1234-abcd",
+    cwd: "/Users/yunye/项目",
+    turn: 4,
+    reason: { kind: "completed" },
+    time: TIME,
+  }).title, "项目 · 第 4 轮", "each turn keeps its own round label");
 });
 
 test("writes a private, atomically renamed JSON file", () => {
@@ -326,4 +333,61 @@ test("subagent approvals are not surfaced", () => {
     { type: "approval/asked", time: TIME, data: { id: "a", toolName: "bash" } },
   );
   assert.equal(inboxCount(root), 0);
+});
+
+test("reads the folded session title when the title event was missed", () => {
+  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
+  const handlers = new Map();
+  apply(
+    {
+      on: (event, handler) => handlers.set(event, handler),
+      logger: { warn: () => {} },
+      sessionTitle: { get: () => ({ title: "设计 AI 任务与提醒中心" }) },
+    },
+    { dataDir: root },
+  );
+  handlers.get("session/event")(session(), {
+    type: "turn/end",
+    time: TIME,
+    data: { turn: 2, reason: { kind: "completed" } },
+  });
+  const [file] = readdirSync(join(root, "inbox"));
+  const entry = JSON.parse(readFileSync(join(root, "inbox", file), "utf8"));
+  assert.equal(entry.title, "设计 AI 任务与提醒中心");
+});
+
+test("a failing title service still delivers with a round fallback", () => {
+  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
+  const handlers = new Map();
+  apply(
+    {
+      on: (event, handler) => handlers.set(event, handler),
+      logger: { warn: () => {} },
+      sessionTitle: { get: () => { throw new Error("not live"); } },
+    },
+    { dataDir: root },
+  );
+  handlers.get("session/event")(session(), {
+    type: "turn/end",
+    time: TIME,
+    data: { turn: 2, reason: { kind: "completed" } },
+  });
+  const [file] = readdirSync(join(root, "inbox"));
+  const entry = JSON.parse(readFileSync(join(root, "inbox", file), "utf8"));
+  assert.equal(entry.title, "MIRA · 第 2 轮");
+});
+
+test("approval reminders inherit the current round", () => {
+  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
+  const handlers = new Map();
+  apply(
+    { on: (event, handler) => handlers.set(event, handler), logger: { warn: () => {} } },
+    { dataDir: root },
+  );
+  const emit = (event) => handlers.get("session/event")(session(), event);
+  emit({ type: "turn/start", time: TIME, data: { turn: 3 } });
+  emit({ type: "approval/asked", time: TIME, data: { id: "a1", toolName: "bash" } });
+  const [file] = readdirSync(join(root, "inbox"));
+  const entry = JSON.parse(readFileSync(join(root, "inbox", file), "utf8"));
+  assert.equal(entry.title, "MIRA · 第 3 轮");
 });

@@ -32,6 +32,7 @@ function settings(config) {
 export function apply(ctx, config) {
   const { dataDir, link, skipSubagents } = settings(config);
   const titles = new Map();
+  const turns = new Map();
 
   function deliver(entry) {
     try {
@@ -45,6 +46,26 @@ export function apply(ctx, config) {
     return skipSubagents && isSubagent(session);
   }
 
+  function titleOf(session) {
+    const cached = titles.get(session.id);
+    if (cached) return cached;
+    try {
+      // Do not declare an inject dependency: the bridge must keep working in
+      // profiles without the title service, and cordis' object form maps
+      // service names, not required/optional lists.
+      const service = ctx.sessionTitle ?? ctx.get?.("sessionTitle");
+      const snapshot = service?.get?.(session);
+      const title = typeof snapshot?.title === "string" ? snapshot.title.trim() : "";
+      if (title) {
+        titles.set(session.id, title);
+        return title;
+      }
+    } catch (error) {
+      ctx.logger?.warn?.(`mira-bridge: title lookup failed: ${error?.message ?? error}`);
+    }
+    return undefined;
+  }
+
   ctx.on("session/event", (session, event) => {
     try {
       if (event.type === "session/title") {
@@ -54,6 +75,9 @@ export function apply(ctx, config) {
         return;
       }
       if (skip(session)) return;
+      if (event.type === "turn/start" || event.type === "turn/end") {
+        if (Number.isSafeInteger(event.data?.turn)) turns.set(session.id, event.data.turn);
+      }
       switch (event.type) {
         case "turn/end":
           deliver(
@@ -63,7 +87,7 @@ export function apply(ctx, config) {
               turn: event.data?.turn,
               reason: event.data?.reason,
               time: event.time,
-              title: titles.get(session.id),
+              title: titleOf(session),
               link,
             }),
           );
@@ -74,7 +98,8 @@ export function apply(ctx, config) {
               sessionId: session.id,
               cwd: session.header?.cwd,
               time: event.time,
-              title: titles.get(session.id),
+              title: titleOf(session),
+              turn: turns.get(session.id),
               toolName: event.data?.toolName,
               reason: event.data?.reason,
               approvalId: event.data?.id,
@@ -135,5 +160,6 @@ export function apply(ctx, config) {
 
   ctx.on("session/disposed", (session) => {
     titles.delete(session.id);
+    turns.delete(session.id);
   });
 }
