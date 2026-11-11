@@ -41,11 +41,11 @@ MIRA · AI Task Hub 0.2：macOS 菜单栏 AI 任务提醒中心。本地优先�
 | Q9 | P2 | `tick` 每处理一个收件箱文件就整份保存 `state.json`，批量事件时写放大 | 收集后单次保存 | ✅ R2 |
 | Q10 | P1 | `installHooks` 对 `Bundle.main.url(forResource:"receive", ...)!` 强制解包，资源缺失时配置连接直接崩溃 | 改为可抛出错误的 guard | ✅ R3 |
 | Q11 | P3 | 设置页与安装脚本注释仍写「插件只观察，不参与审批」，与已实现的审批接管矛盾 | 更新为真实行为 | ✅ R3 |
-| Q12 | P2 | `Hub.start` 用 `Timer.scheduledTimer` 只进 default 模式；拖拽窗口/菜单跟踪期间提醒轮询暂停 | 注册到 `.common` 模式 | 待做 |
+| Q12 | P2 | `Hub.start` 用 `Timer.scheduledTimer` 只进 default 模式；拖拽窗口/菜单跟踪期间提醒轮询暂停 | 注册到 `.common` 模式 | ✅ R4 |
 | Q13 | P3 | `receive.py` 把 `session_id: null` 变成字符串 `"None"`；非字符串 `cwd` 会抛异常丢失事件 | 类型与空值守卫 | 待做 |
 | Q14 | P2 | 卸载脚本末尾 `"已删除 $DEST。…"` 中变量名与中文标点粘连，`set -u` 下每次卸载都以 unbound variable 退出 | 改为 `${DEST}` | ✅ R1 |
 | Q15 | P2 | 应用与脚本的安装注释不同，卸载互不识别；`remove` 删除补丁块时会把后续行粘到上一行 | 双向识别已知块 + 按块替换并复核 | ✅ R1 |
-| Q16 | P3 | `tick` 保存失败后，若无新事件则下一轮 `changed == false`，不再重试保存，内存状态可能丢失 | 记录未完成保存，下轮重试 | 待做 |
+| Q16 | P3 | `tick` 保存失败后，若无新事件则下一轮 `changed == false`，不再重试保存，内存状态可能丢失 | 记录未完成保存，下轮重试 | ✅ R4 |
 | — | 跳过 | 历史/`seen` 无限增长 | 涉及数据保留语义，需产品决定 | 记录 |
 | — | 跳过 | DSH 会话标题在标题生成前回退为短标识 | 已文档化，改动收益低 | 记录 |
 
@@ -92,6 +92,16 @@ MIRA · AI Task Hub 0.2：macOS 菜单栏 AI 任务提醒中心。本地优先�
 - 行为兼容性：只影响异常/文案路径，正常计划时间与审批流程不变；未改任何界面布局。
 - 剩余风险：DST 回拨的重复时刻沿用系统默认 `.first`，与修改前一致。
 
+### R4 · 2026-11-11 · 定时器运行模式与保存失败重试（Q12/Q16）
+
+- 根因：`Timer.scheduledTimer` 只注册 default 模式，窗口拖拽、菜单跟踪等事件跟踪模式下 3 秒轮询暂停，提醒/心跳延迟；`save()` 失败后若下一轮没有新事件，`changed` 为 false，状态永远不会重试落盘。
+- 修改（`Sources/App.swift`）：
+  - 定时器改用 `Timer(timeInterval:repeats:)` + `RunLoop.main.add(_, forMode: .common)`；启动前先 invalidate 旧定时器。
+  - `save()` 成功/失败维护 `savePending`；`tick` 在 `savePending` 时也会重试，成功后清除。`finish`/`snooze`/计划编辑触发的保存失败同样受益。
+- 验证：Swift 断言 PASS；`bash scripts/build.sh` 成功；Python/Node 套件不受影响。
+- 行为兼容性：轮询仍是 3 秒；只是不再在拖拽/菜单期间暂停。保存成功路径不变，失败路径多一次下轮重试。
+- 运行验证限制：本机已有一个旧构建的 MIRA 进程在跑，未强制退出/重启以免打断当前会话；新构建已生成，重启应用后生效。
+
 ## 4. 恢复入口
 
 ```sh
@@ -102,4 +112,4 @@ node --test tests/test_dsh_bridge.mjs
 swiftc -module-cache-path /tmp/mira-swift-cache Sources/Core.swift tests/CoreTests.swift -o /tmp/mira-core-tests && /tmp/mira-core-tests
 ```
 
-下一项：Q16（保存失败重试）与 Q12（定时器模式），随后 Q7 / Q13（receive.py）。
+下一项：Q7 / Q13（receive.py 边界），随后 Q8 收尾与全量回归。

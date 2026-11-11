@@ -37,6 +37,8 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
     let decoder = JSONDecoder()
     var timer: Timer?
     var storageReady = true
+    /// Set when a state write failed; retried on the next tick even without new events.
+    var savePending = false
     var showPopup: ((Entry) -> Void)?
     var closePopup: ((String) -> Void)?
     var showMain: (() -> Void)?
@@ -95,13 +97,26 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
     }
     func save() -> Bool {
         guard storageReady else { return false }
-        do { try encoder.encode(data).write(to: file, options: .atomic); return true }
-        catch { self.error = "保存失败：\(error.localizedDescription)"; return false }
+        do {
+            try encoder.encode(data).write(to: file, options: .atomic)
+            savePending = false
+            return true
+        } catch {
+            savePending = true
+            self.error = "保存失败：\(error.localizedDescription)"
+            return false
+        }
     }
     func start() {
         refreshPermission()
         tick()
-        timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in Task { @MainActor in self?.tick() } }
+        timer?.invalidate()
+        // `.common` keeps the 3-second loop alive while a window is dragged,
+        // a menu is tracked, or a modal panel is open. The default mode alone
+        // pauses reminders in those states.
+        let ticker = Timer(timeInterval: 3, repeats: true) { [weak self] _ in Task { @MainActor in self?.tick() } }
+        RunLoop.main.add(ticker, forMode: .common)
+        timer = ticker
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.tick() } }
     }
     func refreshPermission() {
@@ -139,8 +154,9 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
             }
         }
         // One state write per tick, however many inbox files arrived. Files are
-        // only deleted after the save succeeded, so a failure retries next tick.
-        if !drained.consumed.isEmpty || changed, !save() { return }
+        // only deleted after the save succeeded, so a failure retries next tick;
+        // savePending also retries writes that failed outside the inbox path.
+        if !drained.consumed.isEmpty || changed || savePending, !save() { return }
         for url in drained.consumed { try? FileManager.default.removeItem(at: url) }
         for target in drained.dismissed {
             closePopup?(target)
