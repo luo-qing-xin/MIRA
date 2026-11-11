@@ -36,13 +36,13 @@ MIRA · AI Task Hub 0.2：macOS 菜单栏 AI 任务提醒中心。本地优先�
 | Q4 | P0/P1 | `PlanEditor` 用 `date(bySettingHour:)!` 强制解包；夏令时跳变时该时刻可能不存在 → 打开计划编辑器崩溃 | 增加安全构造与回退 | ✅ R3 |
 | Q5 | P3 | `DSHLink.installed` 用子串匹配，`id: mira-bridge-2` 会被误判为已安装 | 改为整行匹配 | ✅ R1 |
 | Q6 | P3 | 备份文件名精确到秒，同一秒内两次安装/移除会覆盖上一份备份 | 冲突时追加序号 | ✅ R1 |
-| Q7 | P3 | `receive.py` 对 `cwd=/` 生成空项目名，显示为 `Codex · ` | 空名回退 | 待做 |
+| Q7 | P3 | `receive.py` 对 `cwd=/` 生成空项目名，显示为 `Codex · ` | 空名回退 | ✅ R5 |
 | Q8 | P3 | `Hub.open` 失败文案只提 ChatGPT/Codex，DSH 用户被误导 | 补上 DSH | ✅ R3 |
 | Q9 | P2 | `tick` 每处理一个收件箱文件就整份保存 `state.json`，批量事件时写放大 | 收集后单次保存 | ✅ R2 |
 | Q10 | P1 | `installHooks` 对 `Bundle.main.url(forResource:"receive", ...)!` 强制解包，资源缺失时配置连接直接崩溃 | 改为可抛出错误的 guard | ✅ R3 |
 | Q11 | P3 | 设置页与安装脚本注释仍写「插件只观察，不参与审批」，与已实现的审批接管矛盾 | 更新为真实行为 | ✅ R3 |
 | Q12 | P2 | `Hub.start` 用 `Timer.scheduledTimer` 只进 default 模式；拖拽窗口/菜单跟踪期间提醒轮询暂停 | 注册到 `.common` 模式 | ✅ R4 |
-| Q13 | P3 | `receive.py` 把 `session_id: null` 变成字符串 `"None"`；非字符串 `cwd` 会抛异常丢失事件 | 类型与空值守卫 | 待做 |
+| Q13 | P3 | `receive.py` 把 `session_id: null` 变成字符串 `"None"`；非字符串 `cwd` 会抛异常丢失事件 | 类型与空值守卫 | ✅ R5 |
 | Q14 | P2 | 卸载脚本末尾 `"已删除 $DEST。…"` 中变量名与中文标点粘连，`set -u` 下每次卸载都以 unbound variable 退出 | 改为 `${DEST}` | ✅ R1 |
 | Q15 | P2 | 应用与脚本的安装注释不同，卸载互不识别；`remove` 删除补丁块时会把后续行粘到上一行 | 双向识别已知块 + 按块替换并复核 | ✅ R1 |
 | Q16 | P3 | `tick` 保存失败后，若无新事件则下一轮 `changed == false`，不再重试保存，内存状态可能丢失 | 记录未完成保存，下轮重试 | ✅ R4 |
@@ -102,6 +102,16 @@ MIRA · AI Task Hub 0.2：macOS 菜单栏 AI 任务提醒中心。本地优先�
 - 行为兼容性：轮询仍是 3 秒；只是不再在拖拽/菜单期间暂停。保存成功路径不变，失败路径多一次下轮重试。
 - 运行验证限制：本机已有一个旧构建的 MIRA 进程在跑，未强制退出/重启以免打断当前会话；新构建已生成，重启应用后生效。
 
+### R5 · 2026-11-11 · Codex 接收器边界输入（Q7/Q13）
+
+- 根因：`str(payload.get('session_id', ''))` 把 `null` 变成 `"None"`；`Path(cwd or 'Codex').name` 对 `/` 得到空串，来源显示为 `Codex · `；`cwd` 非字符串、`tool_name: null` 会抛异常，事件被 `main` 吞掉；`turn_id: null` 变成 `"None"` 进入去重哈希。
+- 修改（`integrations/codex/receive.py`）：
+  - 只接受非空字符串 `session_id`（去首尾空白）；缺失或非法直接忽略，不写事件。
+  - `cwd` 只接受字符串；根目录、空串、缺失、非字符串统一回退为 `Codex` 来源，标题为 `Codex · 任务 <短标识>`；真实项目名为 `Codex` 时仍显示 `Codex · Codex`。
+  - `tool_name` 非字符串按空处理，`PreToolUse` 不再抛异常；`turn_id` 空值不再变成字符串 `"None"`。
+- 验证：Python 11 项全部通过（新增缺失/空白 session、null session 不落盘、根目录/空/缺失/非字符串 cwd、真实 Codex 项目名、null tool_name）；`bash scripts/build.sh` 成功；Node 28 项、Swift 断言通过。
+- 行为兼容性：正常 payload 的 id、标题、来源、链接、去重规则不变；仅修复异常输入。
+
 ## 4. 恢复入口
 
 ```sh
@@ -112,4 +122,4 @@ node --test tests/test_dsh_bridge.mjs
 swiftc -module-cache-path /tmp/mira-swift-cache Sources/Core.swift tests/CoreTests.swift -o /tmp/mira-core-tests && /tmp/mira-core-tests
 ```
 
-下一项：Q7 / Q13（receive.py 边界），随后 Q8 收尾与全量回归。
+下一项：全量回归、复查新问题并收尾（Q8 已完成）。

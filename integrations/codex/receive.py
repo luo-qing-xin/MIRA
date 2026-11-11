@@ -41,17 +41,25 @@ def normalize(payload, now, codex_home=None):
                 'UserPromptSubmit': '运行中', 'Interrupt': '已中断', 'PreToolUse': '待补充信息'}
     if event not in statuses:
         return None
-    if event == 'PreToolUse' and 'request_user_input' not in payload.get('tool_name', ''):
+    tool_name = payload.get('tool_name')
+    tool_name = tool_name if isinstance(tool_name, str) else ''
+    if event == 'PreToolUse' and 'request_user_input' not in tool_name:
         return None
-    session = str(payload.get('session_id', ''))
+    session = payload.get('session_id')
+    session = session.strip() if isinstance(session, str) else ''
     if not session:
         return None
-    turn = str(payload.get('turn_id', ''))
+    turn = str(payload.get('turn_id') or '')
     # Use tool input only in the hash; never store full commands or prompts.
     identity = json.dumps([session, turn, event, payload.get('tool_use_id'),
                            payload.get('tool_input') if event in ('PermissionRequest', 'PreToolUse') else None], sort_keys=True)
     key = hashlib.sha256(identity.encode()).hexdigest()
-    project = Path(payload.get('cwd') or 'Codex').name
+    cwd = payload.get('cwd')
+    project = Path(cwd).name if isinstance(cwd, str) else ''
+    # Root, missing, and non-string cwd must not produce an empty source label.
+    missing_project = not project
+    if missing_project:
+        project = 'Codex'
     name = task_title(session, codex_home) if codex_home is not None else None
     name = name or project + ' · 任务 ' + session[:8]
     bodies = {'Stop': 'Codex 本轮已结束，请打开原任务查看结果。',
@@ -60,7 +68,8 @@ def normalize(payload, now, codex_home=None):
               'Interrupt': '本轮已被中断，可返回任务继续。',
               'PreToolUse': 'Codex 需要补充信息，请返回原任务回答。'}
     return dict(id=key, title=name, body=bodies[event],
-                source='Codex · ' + project, status=statuses[event],
+                source='Codex' if missing_project else 'Codex · ' + project,
+                status=statuses[event],
                 link='codex://threads/' + quote(session, safe=''), date=now,
                 done=False, notified=False, thread=session)
 

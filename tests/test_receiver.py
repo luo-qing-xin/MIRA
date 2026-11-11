@@ -62,4 +62,40 @@ class ReceiverTests(unittest.TestCase):
                 db.execute('INSERT INTO threads VALUES (?, ?, ?)', ('abc', 'Long initial prompt ' * 200, '设计 AI 任务与提醒中心'))
             self.assertEqual(module.task_title('abc', tmp), '设计 AI 任务与提醒中心')
 
+    def test_missing_session_is_ignored(self):
+        self.assertIsNone(module.normalize(dict(hook_event_name='Stop', session_id=None, cwd='/x'), 1))
+        self.assertIsNone(module.normalize(dict(hook_event_name='Stop', cwd='/x'), 1))
+        self.assertIsNone(module.normalize(dict(hook_event_name='Stop', session_id='   ', cwd='/x'), 1))
+
+    def test_root_or_missing_cwd_has_a_readable_label(self):
+        cases = [
+            {'hook_event_name': 'Stop', 'session_id': 'abcdefgh-1234'},
+            {'hook_event_name': 'Stop', 'session_id': 'abcdefgh-1234', 'cwd': '/'},
+            {'hook_event_name': 'Stop', 'session_id': 'abcdefgh-1234', 'cwd': ''},
+            {'hook_event_name': 'Stop', 'session_id': 'abcdefgh-1234', 'cwd': None},
+            {'hook_event_name': 'Stop', 'session_id': 'abcdefgh-1234', 'cwd': ['/tmp']},
+        ]
+        for payload in cases:
+            entry = module.normalize(payload, 100)
+            self.assertEqual(entry['source'], 'Codex', payload)
+            self.assertEqual(entry['title'], 'Codex · 任务 abcdefgh', payload)
+        named = module.normalize(dict(hook_event_name='Stop', session_id='s', cwd='/Users/x/Codex'), 1)
+        self.assertEqual(named['source'], 'Codex · Codex', 'a real project named Codex keeps both labels')
+
+    def test_null_tool_name_is_nonblocking(self):
+        self.assertIsNone(module.normalize(dict(hook_event_name='PreToolUse', session_id='s', tool_name=None), 1))
+        entry = module.normalize(dict(hook_event_name='PreToolUse', session_id='s', tool_name='request_user_input'), 1)
+        self.assertEqual(entry['status'], '待补充信息')
+
+    def test_null_session_writes_no_event(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = subprocess.run(
+                ['/usr/bin/python3', str(SCRIPT)],
+                input=json.dumps(dict(hook_event_name='Stop', session_id=None)),
+                text=True, capture_output=True, env={**os.environ, 'MIRA_DATA_DIR': tmp},
+            )
+            self.assertEqual(run.returncode, 0)
+            self.assertEqual(json.loads(run.stdout), {})
+            self.assertEqual(list((Path(tmp)/'inbox').glob('*.json')), [])
+
 if __name__ == '__main__': unittest.main()
