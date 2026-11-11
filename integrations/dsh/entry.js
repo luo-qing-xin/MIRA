@@ -88,11 +88,13 @@ export function buildApprovalEntry({
   toolName,
   reason,
   approvalId,
+  token,
+  ttlMs,
   link = "dsh://open",
 }) {
   const tool = oneLine(toolName, 60) || "工具";
   const why = oneLine(reason);
-  return {
+  const entry = {
     id: approvalEntryId(sessionId, approvalId),
     title: displayTitle(title, sessionId, cwd, turn),
     body: `DSH 需要你确认「${tool}」的操作${why ? "：" + why : "。"} 点击回到原会话处理。`,
@@ -104,6 +106,9 @@ export function buildApprovalEntry({
     notified: false,
     thread: String(sessionId),
   };
+  if (typeof token === "string" && token.length > 0) entry.token = token;
+  if (Number.isFinite(ttlMs) && ttlMs > 0) entry.expires = (time + ttlMs) / 1000;
+  return entry;
 }
 
 /** Build one reminder covering a pending user-question request. */

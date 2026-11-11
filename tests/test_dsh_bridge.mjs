@@ -1,7 +1,7 @@
 // Unit checks for the DSH bridge. Run: node --test tests/test_dsh_bridge.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -22,6 +22,36 @@ import {
 import { apply } from "../integrations/dsh/index.js";
 
 const TIME = 1_764_000_000_123;
+
+function alive(root) {
+  writeFileSync(join(root, "heartbeat"), String(Date.now()));
+}
+
+function inboxEntries(root) {
+  try {
+    return readdirSync(join(root, "inbox"))
+      .filter((file) => file.endsWith(".json"))
+      .sort()
+      .map((file) => JSON.parse(readFileSync(join(root, "inbox", file), "utf8")));
+  } catch {
+    return [];
+  }
+}
+
+async function waitFor(predicate, timeoutMs = 2000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const value = predicate();
+    if (value) return value;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("condition not met in time");
+}
+
+function decide(root, token, decision) {
+  mkdirSync(join(root, "decisions"), { recursive: true });
+  writeFileSync(join(root, "decisions", token + ".json"), JSON.stringify({ token, decision }));
+}
 
 function inboxCount(root) {
   try {
@@ -262,23 +292,106 @@ test("dismissal closes its target and is never shown", () => {
   assert.equal(dismissal.done, true);
 });
 
-test("approval asked and decided produce a reminder plus a dismissal", () => {
+test("an approval is claimable from MIRA and closes itself", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
+  alive(root);
+  const handlers = new Map();
+  apply(
+    { on: (event, handler, options) => handlers.set(event, { handler, options }), logger: { warn: () => {} } },
+    { dataDir: root, approvalTimeoutMs: 3000, pollMs: 10 },
+  );
+  const registration = handlers.get("approval/request");
+  assert.equal(registration.options?.prepend, true, "approval answerer runs before the desktop dialog");
+  const pending = registration.handler(
+    { agent: { session: session() }, toolName: "bash", reason: "写入工作区之外的文件" },
+    async () => "unavailable",
+  );
+  const entry = await waitFor(() => inboxEntries(root).find((item) => item.status === "待确认"));
+  assert.ok(entry.token, "reminder carries a one-shot token");
+  assert.ok(entry.expires > entry.date, "reminder expires with the approval window");
+  assert.match(entry.body, /bash/);
+
+  decide(root, entry.token, "allow");
+  assert.equal(await pending, "allowed-once");
+  const closed = await waitFor(() => inboxEntries(root).find((item) => item.dismiss === entry.id));
+  assert.ok(closed, "answered approval is dismissed");
+});
+
+test("a denied approval returns rejected and closes the reminder", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
+  alive(root);
+  const handlers = new Map();
+  apply(
+    { on: (event, handler) => handlers.set(event, handler), logger: { warn: () => {} } },
+    { dataDir: root, approvalTimeoutMs: 3000, pollMs: 10 },
+  );
+  const pending = handlers.get("approval/request")(
+    { agent: { session: session() }, toolName: "bash" },
+    async () => "unavailable",
+  );
+  const entry = await waitFor(() => inboxEntries(root).find((item) => item.status === "待确认"));
+  decide(root, entry.token, "deny");
+  assert.equal(await pending, "rejected");
+});
+
+test("deferring falls back to the desktop dialog", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
+  alive(root);
+  const handlers = new Map();
+  apply(
+    { on: (event, handler) => handlers.set(event, handler), logger: { warn: () => {} } },
+    { dataDir: root, approvalTimeoutMs: 3000, pollMs: 10 },
+  );
+  let delegated = false;
+  const pending = handlers.get("approval/request")(
+    { agent: { session: session() }, toolName: "bash" },
+    async () => {
+      delegated = true;
+      return "ui-answer";
+    },
+  );
+  const entry = await waitFor(() => inboxEntries(root).find((item) => item.status === "待确认"));
+  decide(root, entry.token, "defer");
+  assert.equal(await pending, "ui-answer");
+  assert.equal(delegated, true, "desktop answerer decides when deferred");
+});
+
+test("an ignored approval times out to the desktop dialog", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
+  alive(root);
+  const handlers = new Map();
+  apply(
+    { on: (event, handler) => handlers.set(event, handler), logger: { warn: () => {} } },
+    { dataDir: root, approvalTimeoutMs: 40, pollMs: 10 },
+  );
+  const result = await handlers.get("approval/request")(
+    { agent: { session: session() }, toolName: "bash" },
+    async () => "ui-answer",
+  );
+  assert.equal(result, "ui-answer");
+  const entries = inboxEntries(root).sort((a, b) => a.date - b.date);
+  assert.ok(entries.some((item) => item.status === "待确认"), "reminder was shown during the window");
+  assert.ok(entries.some((item) => item.dismiss), "reminder is closed after timeout");
+});
+
+test("approvals are not claimed while MIRA is not running", async () => {
   const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
   const handlers = new Map();
   apply(
     { on: (event, handler) => handlers.set(event, handler), logger: { warn: () => {} } },
-    { dataDir: root },
+    { dataDir: root, approvalTimeoutMs: 40, pollMs: 10 },
   );
-  const emit = (event) => handlers.get("session/event")(session(), event);
-  emit({ type: "approval/asked", time: TIME, data: { id: "approval-1", toolName: "bash" } });
-  emit({ type: "approval/decided", time: TIME + 1000, data: { id: "approval-1", outcome: "allowed-once" } });
-
-  const files = readdirSync(join(root, "inbox")).sort();
-  assert.equal(files.length, 2);
-  const asked = JSON.parse(readFileSync(join(root, "inbox", files[0]), "utf8"));
-  const decided = JSON.parse(readFileSync(join(root, "inbox", files[1]), "utf8"));
-  assert.equal(asked.status, "待确认");
-  assert.equal(decided.dismiss, asked.id);
+  let delegated = false;
+  const result = await handlers.get("approval/request")(
+    { agent: { session: session() }, toolName: "bash" },
+    async () => {
+      delegated = true;
+      return "ui-answer";
+    },
+  );
+  assert.equal(result, "ui-answer");
+  assert.equal(delegated, true);
+  assert.equal(inboxCount(root), 0, "no reminder when MIRA cannot answer");
 });
 
 test("a pending question delegates and closes itself when answered", async () => {
@@ -322,17 +435,19 @@ test("a cancelled question still closes its reminder", async () => {
   assert.equal(files.length, 2, "reminder plus dismissal");
 });
 
-test("subagent approvals are not surfaced", () => {
+test("subagent approvals are not claimed", async () => {
   const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
+  alive(root);
   const handlers = new Map();
   apply(
     { on: (event, handler) => handlers.set(event, handler), logger: { warn: () => {} } },
-    { dataDir: root },
+    { dataDir: root, approvalTimeoutMs: 40, pollMs: 10 },
   );
-  handlers.get("session/event")(
-    session({ origin: "subagent" }),
-    { type: "approval/asked", time: TIME, data: { id: "a", toolName: "bash" } },
+  const result = await handlers.get("approval/request")(
+    { agent: { session: session({ origin: "subagent" }) }, toolName: "bash" },
+    async () => "ui-answer",
   );
+  assert.equal(result, "ui-answer");
   assert.equal(inboxCount(root), 0);
 });
 
@@ -378,19 +493,22 @@ test("a failing title service still delivers with a round fallback", () => {
   assert.equal(entry.title, "MIRA · 第 2 轮");
 });
 
-test("approval reminders inherit the current round", () => {
+test("approval reminders inherit the current round", async () => {
   const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
+  alive(root);
   const handlers = new Map();
   apply(
     { on: (event, handler) => handlers.set(event, handler), logger: { warn: () => {} } },
-    { dataDir: root },
+    { dataDir: root, approvalTimeoutMs: 40, pollMs: 10 },
   );
-  const emit = (event) => handlers.get("session/event")(session(), event);
-  emit({ type: "turn/start", time: TIME, data: { turn: 3 } });
-  emit({ type: "approval/asked", time: TIME, data: { id: "a1", toolName: "bash" } });
-  const [file] = readdirSync(join(root, "inbox"));
-  const entry = JSON.parse(readFileSync(join(root, "inbox", file), "utf8"));
+  handlers.get("session/event")(session(), { type: "turn/start", time: TIME, data: { turn: 3 } });
+  const pending = handlers.get("approval/request")(
+    { agent: { session: session() }, toolName: "bash" },
+    async () => "ui-answer",
+  );
+  const entry = await waitFor(() => inboxEntries(root).find((item) => item.status === "待确认"));
   assert.equal(entry.title, "MIRA · 第 3 轮");
+  await pending;
 });
 
 function sessionWithEvents(events) {

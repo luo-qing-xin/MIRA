@@ -38,6 +38,7 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
     var timer: Timer?
     var storageReady = true
     var showPopup: ((Entry) -> Void)?
+    var closePopup: ((String) -> Void)?
     var showMain: (() -> Void)?
     var showTray: (() -> Void)?
     var file: URL { root.appendingPathComponent("state.json") }
@@ -111,7 +112,14 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
     func requestPermission() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in Task { @MainActor in self.refreshPermission() } }
     }
+    /// The DSH bridge only claims approvals while this heartbeat is fresh.
+    func writeHeartbeat() {
+        let url = root.appendingPathComponent("heartbeat")
+        try? Data(String(Int(Date().timeIntervalSince1970 * 1000)).utf8).write(to: url, options: .atomic)
+    }
+
     func tick() {
+        writeHeartbeat()
         guard storageReady else { return }
         let now = Date()
         var changed = false
@@ -122,6 +130,7 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
                 let entry = try decoder.decode(Entry.self, from: Data(contentsOf: url))
                 if let target = entry.dismiss {
                     if data.close(target) { changed = true }
+                    closePopup?(target)
                     UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [target])
                     if save() { try FileManager.default.removeItem(at: url) }
                     continue
@@ -154,9 +163,22 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
             }
         }
         if changed, !save() { return }
+        // Approvals must be actionable: show the card even when system
+        // notifications are allowed, and skip the duplicate system banner.
+        var showedApproval = false
+        for entry in ready {
+            if entry.token != nil {
+                showPopup?(entry)
+                showedApproval = true
+            } else {
+                notify(entry, popup: false)
+            }
+        }
         // One popup per batch; all items remain available in the inbox.
-        for entry in ready.prefix(3) { notify(entry, popup: false) }
-        if notificationStatus != "已允许", let entry = ready.sorted(by: { $0.status == "待确认" && $1.status != "待确认" }).first { showPopup?(entry) }
+        if !showedApproval, notificationStatus != "已允许",
+           let entry = ready.sorted(by: { $0.status == "待确认" && $1.status != "待确认" }).first {
+            showPopup?(entry)
+        }
     }
     var active: [Entry] { data.entries.filter { Schedule.active($0, now: Date()) && $0.status != "运行中" }.sorted { a, b in a.status == "待确认" && b.status != "待确认" } }
     func notify(_ e: Entry, popup: Bool = true) {
@@ -185,6 +207,24 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [id])
         return true
     }
+    @discardableResult
+    func decide(_ entry: Entry, _ decision: String) -> Bool {
+        guard let token = entry.token else { return false }
+        if let expires = entry.expires, expires < Date() {
+            closePopup?(entry.id)
+            _ = finish(entry.id)
+            return false
+        }
+        do {
+            try Decisions.write(root: root, token: token, decision: decision)
+            closePopup?(entry.id)
+            return finish(entry.id)
+        } catch {
+            self.error = "确认未发送：\(error.localizedDescription)"
+            return false
+        }
+    }
+
     func snooze(_ id: String) {
         if let i = data.entries.firstIndex(where: { $0.id == id && $0.canSnooze && !$0.done }) {
             data.entries[i].snooze = Date().addingTimeInterval(600); data.entries[i].notified = false; _ = save()
@@ -245,6 +285,7 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
     var window: NSWindow!
     var status: NSStatusItem!
     var popup: NSPanel?
+    var popupEntryId: String?
     let popover = NSPopover()
     func applicationDidFinishLaunching(_ notification: Notification) {
         if NSRunningApplication.runningApplications(withBundleIdentifier: "local.mira.taskhub").count > 1 { NSApp.terminate(nil); return }
@@ -260,6 +301,12 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
         hub.showTray = { [weak self] in self?.toggleTray() }
         hub.showMain = { [weak self] in self?.showWindow() }
         hub.showPopup = { [weak self] entry in self?.showPopup(entry) }
+        hub.closePopup = { [weak self] id in
+            guard let self, self.popupEntryId == id else { return }
+            self.popup?.close()
+            self.popup = nil
+            self.popupEntryId = nil
+        }
         showWindow(); hub.start()
     }
     @objc func showWindow() { popover.performClose(nil); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
@@ -277,12 +324,16 @@ struct MiraPrimaryButtonStyle: ButtonStyle {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.isReleasedWhenClosed = false; panel.isOpaque = false
         panel.backgroundColor = .clear; panel.hasShadow = true
-        let content = NSHostingView(rootView: ReminderView(hub: hub, entry: entry, dismiss: { [weak panel] in panel?.close() }))
+        let content = NSHostingView(rootView: ReminderView(hub: hub, entry: entry, dismiss: { [weak self, weak panel] in
+            panel?.close()
+            self?.popup = nil
+            self?.popupEntryId = nil
+        }))
         panel.contentView = content
         let size = content.fittingSize
         panel.setContentSize(NSSize(width: 470, height: max(190, size.height)))
         if let frame = NSScreen.main?.visibleFrame { panel.setFrameOrigin(NSPoint(x: frame.maxX - 494, y: frame.maxY - panel.frame.height - 20)) }
-        popup = panel; panel.orderFrontRegardless()
+        popup = panel; popupEntryId = entry.id; panel.orderFrontRegardless()
     }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completion: @escaping (UNNotificationPresentationOptions) -> Void) { completion([.banner, .sound]) }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completion: @escaping () -> Void) {

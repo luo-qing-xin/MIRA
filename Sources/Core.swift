@@ -26,6 +26,8 @@ struct Entry: Codable, Identifiable {
     var thread: String?
     // Control entry: close this other entry id and never display this one.
     var dismiss: String? = nil
+    // One-shot approval token: only present when MIRA may answer this request.
+    var token: String? = nil
 
     var canSnooze: Bool {
         status == "待确认" || status == "待补充信息" || status == "待完成"
@@ -58,6 +60,33 @@ enum Schedule {
     }
     static func active(_ e: Entry, now: Date) -> Bool { !e.done && (e.expires == nil || e.expires! > now) }
 }
+enum Decisions {
+    static let choices: Set<String> = ["allow", "deny", "defer"]
+
+    /// Tokens come from inbox JSON; keep them to a filename-safe alphabet.
+    static func valid(_ token: String) -> Bool {
+        !token.isEmpty && token.count <= 64 && token.allSatisfy { $0.isHexDigit || $0 == "-" }
+    }
+
+    /// Write a one-shot decision for the DSH bridge to pick up.
+    static func write(root: URL, token: String, decision: String) throws {
+        guard valid(token), choices.contains(decision) else {
+            throw NSError(domain: "无效的确认请求", code: 1)
+        }
+        let directory = root.appendingPathComponent("decisions")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let body: [String: Any] = [
+            "token": token,
+            "decision": decision,
+            "time": Int(Date().timeIntervalSince1970 * 1000),
+        ]
+        let data = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+        let target = directory.appendingPathComponent(token + ".json")
+        try data.write(to: target, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
+    }
+}
+
 enum Links {
     static func valid(_ value: String) -> Bool {
         if value.isEmpty { return true }

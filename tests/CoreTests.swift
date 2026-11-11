@@ -48,11 +48,32 @@ import Foundation
         assert(!DSHLink.installed(patch: removed), "row removed")
         assert(!FileManager.default.fileExists(atPath: profile.appendingPathComponent("plugins/mira-bridge").path), "plugin removed")
         try FileManager.default.removeItem(at: temp)
+        let decisionBox = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("mira-decisions-\(UUID().uuidString)")
+        try Decisions.write(root: decisionBox, token: "abcd-1234", decision: "allow")
+        let decisionFile = decisionBox.appendingPathComponent("decisions/abcd-1234.json")
+        let decided = try JSONSerialization.jsonObject(with: Data(contentsOf: decisionFile)) as? [String: Any]
+        assert(decided?["token"] as? String == "abcd-1234", "token echoed")
+        assert(decided?["decision"] as? String == "allow", "decision stored")
+        let permissions = try FileManager.default.attributesOfItem(atPath: decisionFile.path)[.posixPermissions] as? Int
+        assert(permissions == 0o600, "decision file is private")
+        var rejectedToken = false
+        do { try Decisions.write(root: decisionBox, token: "../escape", decision: "allow") } catch { rejectedToken = true }
+        assert(rejectedToken, "path-like tokens are refused")
+        var rejectedChoice = false
+        do { try Decisions.write(root: decisionBox, token: "abcd-1234", decision: "maybe") } catch { rejectedChoice = true }
+        assert(rejectedChoice, "unknown decisions are refused")
+        try FileManager.default.removeItem(at: decisionBox)
+
+        let decoderForToken = JSONDecoder(); decoderForToken.dateDecodingStrategy = .secondsSince1970
+        let approvalJSON = Data("{\"id\":\"a\",\"title\":\"t\",\"body\":\"\",\"source\":\"DSH · MIRA\",\"status\":\"待确认\",\"link\":\"dsh://open\",\"date\":100,\"done\":false,\"notified\":false,\"token\":\"abcd-1234\"}".utf8)
+        let decodedApproval = try decoderForToken.decode(Entry.self, from: approvalJSON)
+        assert(decodedApproval.token == "abcd-1234", "token decodes from inbox JSON")
+
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .secondsSince1970
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .secondsSince1970
         var data = HubData(); data.entries = [done]; data.seen = ["event-1"]
         let restored = try decoder.decode(HubData.self, from: encoder.encode(data))
         assert(restored.entries[0].done && restored.seen.contains("event-1"))
-        print("PASS: missed reminder, dedup, weekday, future, expiration, completion, disabled, URL validation, persistence, dismissal, DSH link install")
+        print("PASS: missed reminder, dedup, weekday, future, expiration, completion, disabled, URL validation, persistence, dismissal, DSH link install, approval decisions")
     }
 }

@@ -1,9 +1,11 @@
 // DSH (DeepSeek Harness) bridge: turns session events into MIRA inbox entries.
-// Mounted as an ordinary cordis plugin row; it never answers approvals.
+// Approval questions may be answered from the MIRA panel within a short TTL;
+// everything else is observe-only.
+import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
-  approvalEntryId,
   buildApprovalEntry,
   buildDismissal,
   buildEntry,
@@ -23,7 +25,10 @@ function settings(config) {
   const dataDir =
     typeof raw.dataDir === "string" && raw.dataDir.startsWith("/") ? raw.dataDir : DEFAULT_DATA_DIR;
   const link = typeof raw.link === "string" && raw.link.length > 0 ? raw.link : "dsh://open";
-  return { dataDir, link, skipSubagents: raw.skipSubagents !== false };
+  const approvalTimeoutMs = Number.isFinite(raw.approvalTimeoutMs) ? Math.max(1000, raw.approvalTimeoutMs) : 60_000;
+  const pollMs = Number.isFinite(raw.pollMs) ? Math.max(5, raw.pollMs) : 250;
+  const heartbeatMs = Number.isFinite(raw.heartbeatMs) ? Math.max(1000, raw.heartbeatMs) : 15_000;
+  return { dataDir, link, skipSubagents: raw.skipSubagents !== false, approvalTimeoutMs, pollMs, heartbeatMs };
 }
 
 /**
@@ -31,9 +36,52 @@ function settings(config) {
  * must never fail a DSH turn or block a pending decision.
  */
 export function apply(ctx, config) {
-  const { dataDir, link, skipSubagents } = settings(config);
+  const { dataDir, link, skipSubagents, approvalTimeoutMs, pollMs, heartbeatMs } = settings(config);
   const titles = new Map();
   const turns = new Map();
+
+  function miraAlive() {
+    try {
+      const stamp = Number(readFileSync(join(dataDir, "heartbeat"), "utf8").trim());
+      return Number.isFinite(stamp) && Date.now() - stamp <= heartbeatMs;
+    } catch {
+      return false;
+    }
+  }
+
+  function waitForDecision(token, signal) {
+    const file = join(dataDir, "decisions", token + ".json");
+    return new Promise((resolve) => {
+      const started = Date.now();
+      let settled = false;
+      let timer;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        clearInterval(timer);
+        signal?.removeEventListener?.("abort", onAbort);
+        resolve(value);
+      };
+      const onAbort = () => finish("defer");
+      const poll = () => {
+        try {
+          if (existsSync(file)) {
+            const raw = readFileSync(file, "utf8");
+            try { unlinkSync(file); } catch {}
+            const parsed = JSON.parse(raw);
+            if (parsed?.token === token && ["allow", "deny", "defer"].includes(parsed.decision)) {
+              finish(parsed.decision);
+              return;
+            }
+          }
+        } catch {}
+        if (Date.now() - started >= approvalTimeoutMs) finish("timeout");
+      };
+      if (signal?.aborted) return finish("defer");
+      signal?.addEventListener?.("abort", onAbort, { once: true });
+      timer = setInterval(poll, pollMs);
+    });
+  }
 
   function deliver(entry) {
     try {
@@ -118,30 +166,6 @@ export function apply(ctx, config) {
             }),
           );
           break;
-        case "approval/asked":
-          deliver(
-            buildApprovalEntry({
-              sessionId: session.id,
-              cwd: session.header?.cwd,
-              time: event.time,
-              title: titleOf(session),
-              turn: turns.get(session.id),
-              toolName: event.data?.toolName,
-              reason: event.data?.reason,
-              approvalId: event.data?.id,
-              link,
-            }),
-          );
-          break;
-        case "approval/decided":
-          deliver(
-            buildDismissal({
-              targetId: approvalEntryId(session.id, event.data?.id),
-              sessionId: session.id,
-              time: event.time,
-            }),
-          );
-          break;
         default:
           break;
       }
@@ -149,6 +173,40 @@ export function apply(ctx, config) {
       ctx.logger?.warn?.(`mira-bridge: event handling failed: ${error?.message ?? error}`);
     }
   });
+
+  // An approval is a waterfall: claim it only while MIRA is alive, show an
+  // actionable reminder, and fall back to the desktop dialog on timeout,
+  // deferral, or dismissal.
+  ctx.on("approval/request", async (request, next) => {
+    const session = request?.agent?.session;
+    if (!session || skip(session) || !miraAlive()) return next();
+    const token = randomUUID();
+    const askedAt = Date.now();
+    const entry = buildApprovalEntry({
+      sessionId: session.id,
+      cwd: session.header?.cwd,
+      time: askedAt,
+      title: titleOf(session),
+      turn: turns.get(session.id),
+      toolName: request.toolName,
+      reason: request.reason,
+      approvalId: token,
+      token,
+      ttlMs: approvalTimeoutMs,
+      link,
+    });
+    deliver(entry);
+    let decision = "defer";
+    try {
+      decision = await waitForDecision(token, request.signal);
+    } catch (error) {
+      ctx.logger?.warn?.(`mira-bridge: approval wait failed: ${error?.message ?? error}`);
+    }
+    deliver(buildDismissal({ targetId: entry.id, sessionId: session.id, time: Math.max(Date.now(), askedAt + 1) }));
+    if (decision === "allow") return "allowed-once";
+    if (decision === "deny") return "rejected";
+    return next();
+  }, { prepend: true });
 
   // A pending question is a waterfall, not a session event: observe it, then
   // delegate the actual answer to the desktop client.
@@ -166,7 +224,8 @@ export function apply(ctx, config) {
             sessionId: session.id,
             cwd: session.header?.cwd,
             time: Date.now(),
-            title: titles.get(session.id),
+            title: titleOf(session),
+            turn: turns.get(session.id),
             questions,
             link,
           }),

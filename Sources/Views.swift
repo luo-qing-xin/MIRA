@@ -75,16 +75,25 @@ struct TaskRow: View {
                 }.buttonStyle(MiraPrimaryButtonStyle())
             }
             if !history && entry.status != "运行中" {
-                HStack {
-                    if !compact && !entry.link.isEmpty {
-                        Button { hub.open(entry) } label: { Label("打开原任务", systemImage: "arrow.up.right") }.buttonStyle(MiraPrimaryButtonStyle())
+                if entry.token != nil, entry.status == "待确认" {
+                    HStack(spacing: 8) {
+                        Button("允许一次") { hub.decide(entry, "allow") }.buttonStyle(MiraPrimaryButtonStyle())
+                        Button("拒绝") { hub.decide(entry, "deny") }.buttonStyle(QuietButtonStyle())
+                        Button("去 DSH 处理") { hub.decide(entry, "defer") }.buttonStyle(QuietButtonStyle())
+                        Spacer()
                     }
-                    if entry.canSnooze {
-                        Button("10 分钟后") { hub.snooze(entry.id) }.buttonStyle(QuietButtonStyle())
+                } else {
+                    HStack {
+                        if !compact && !entry.link.isEmpty {
+                            Button { hub.open(entry) } label: { Label("打开原任务", systemImage: "arrow.up.right") }.buttonStyle(MiraPrimaryButtonStyle())
+                        }
+                        if entry.canSnooze {
+                            Button("10 分钟后") { hub.snooze(entry.id) }.buttonStyle(QuietButtonStyle())
+                        }
+                        Spacer()
+                        Button(entry.source == "个人计划" ? "完成" : "标为已处理") { hub.finish(entry.id) }
+                            .buttonStyle(QuietButtonStyle())
                     }
-                    Spacer()
-                    Button(entry.source == "个人计划" ? "完成" : "标为已处理") { hub.finish(entry.id) }
-                        .buttonStyle(QuietButtonStyle())
                 }
             }
             if !compact && (history || entry.status == "运行中") && !entry.link.isEmpty {
@@ -310,18 +319,27 @@ struct ReminderView: View {
                 }
                 StatusLabel(text: entry.status)
                 Text(entry.body.isEmpty ? entry.status : entry.body).font(.system(size: 13)).foregroundStyle(quiet).lineLimit(3).fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 10) {
-                    if entry.canSnooze {
-                        Button("10 分钟后") { hub.snooze(entry.id); dismiss() }.buttonStyle(QuietButtonStyle())
-                    } else if hub.data.entries.contains(where: { $0.id == entry.id && !$0.done }) {
-                        Button("标为已处理") {
-                            if hub.finish(entry.id) { dismiss() }
-                            else { hub.showMain?(); dismiss() }
-                        }.buttonStyle(QuietButtonStyle())
-                    }
-                    Spacer(minLength: 0)
-                    Button { hub.open(entry); dismiss() } label: { Label(entry.link.isEmpty ? "查看任务中心" : "打开原任务", systemImage: "arrow.up.right") }.buttonStyle(MiraPrimaryButtonStyle())
-                }.padding(.top, 7)
+                if entry.token != nil, entry.status == "待确认" {
+                    HStack(spacing: 8) {
+                        Button("允许一次") { if hub.decide(entry, "allow") { dismiss() } }.buttonStyle(MiraPrimaryButtonStyle())
+                        Button("拒绝") { if hub.decide(entry, "deny") { dismiss() } }.buttonStyle(QuietButtonStyle())
+                        Button("去 DSH 处理") { if hub.decide(entry, "defer") { dismiss() } }.buttonStyle(QuietButtonStyle())
+                        Spacer(minLength: 0)
+                    }.padding(.top, 7)
+                } else {
+                    HStack(spacing: 10) {
+                        if entry.canSnooze {
+                            Button("10 分钟后") { hub.snooze(entry.id); dismiss() }.buttonStyle(QuietButtonStyle())
+                        } else if hub.data.entries.contains(where: { $0.id == entry.id && !$0.done }) {
+                            Button("标为已处理") {
+                                if hub.finish(entry.id) { dismiss() }
+                                else { hub.showMain?(); dismiss() }
+                            }.buttonStyle(QuietButtonStyle())
+                        }
+                        Spacer(minLength: 0)
+                        Button { hub.open(entry); dismiss() } label: { Label(entry.link.isEmpty ? "查看任务中心" : "打开原任务", systemImage: "arrow.up.right") }.buttonStyle(MiraPrimaryButtonStyle())
+                    }.padding(.top, 7)
+                }
             }
         }.padding(22).frame(width: 470, alignment: .leading).background(paper).foregroundStyle(ink)
             .clipShape(RoundedRectangle(cornerRadius: 16))
