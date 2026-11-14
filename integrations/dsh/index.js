@@ -1,22 +1,33 @@
-// DSH (DeepSeek Harness) bridge: turns session events into MIRA inbox entries.
-// Approval questions may be answered from the MIRA panel within a short TTL;
-// everything else is observe-only.
+// DSH (DeepSeek Harness) bridge: turns session events into MIRA adapter
+// contract events. The bridge owns only DSH knowledge — which session event
+// means what, how to read the current prompt, and how to wait for an approval
+// answer. MIRA normalizes, titles, de-duplicates and validates links.
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
-  buildApprovalEntry,
-  buildDismissal,
-  buildEntry,
-  buildQuestionEntry,
-  buildRunningEntry,
+  approvalAskedEvent,
+  approvalClosedEvent,
   isSubagent,
-  questionEntryId,
-  promptTitle,
-  summarize,
-  writeEntry,
+  questionAskedEvent,
+  questionClosedEvent,
+  turnEndEvent,
+  turnStartEvent,
 } from "./entry.js";
+
+// Installed layout copies emit.js next to this file; the repository keeps it in
+// integrations/emit/. resolve synchronously so the plugin can stay declarative.
+const require = createRequire(import.meta.url);
+const emitter = (() => {
+  for (const candidate of ["./emit.js", "../emit/emit.js"]) {
+    try {
+      return require(candidate);
+    } catch {}
+  }
+  throw new Error("mira-bridge: emitter is missing (reinstall the bridge)");
+})();
 
 export const name = "dsh-mira-bridge";
 
@@ -85,9 +96,9 @@ export function apply(ctx, config) {
     });
   }
 
-  function deliver(entry) {
+  function deliver(event) {
     try {
-      writeEntry(dataDir, entry);
+      emitter.emit(dataDir, event);
       return true;
     } catch (error) {
       ctx.logger?.warn?.(`mira-bridge: delivery failed: ${error?.message ?? error}`);
@@ -113,32 +124,15 @@ export function apply(ctx, config) {
     return undefined;
   }
 
-  function firstPrompt(session) {
-    return scanPrompt(session, false);
-  }
-
   /** The most recent prompt authored by the user, regardless of turn boundaries. */
   function latestPrompt(session) {
     return scanPrompt(session, true);
   }
 
-  /** Current-round prompt title, with the session title as a fallback. */
-  function turnTitle(session) {
-    try {
-      const prompt = latestPrompt(session);
-      const title = prompt ? promptTitle(prompt) : "";
-      if (title) return title;
-    } catch (error) {
-      ctx.logger?.warn?.(`mira-bridge: prompt title failed: ${error?.message ?? error}`);
-    }
-    return sessionTitleOf(session);
-  }
-
+  /** Non-fallback session title; a fallback is just the prompt clipped by DSH. */
   function sessionTitleOf(session) {
     const cached = titles.get(session.id);
     if (cached) return cached;
-    let serviceTitle;
-    let serviceFallback = false;
     try {
       // Do not declare an inject dependency: the bridge must keep working in
       // profiles without the title service, and cordis' object form maps
@@ -146,36 +140,26 @@ export function apply(ctx, config) {
       const service = ctx.sessionTitle ?? ctx.get?.("sessionTitle");
       const snapshot = service?.get?.(session);
       const title = typeof snapshot?.title === "string" ? snapshot.title.trim() : "";
-      if (title) {
-        serviceTitle = title;
-        serviceFallback = snapshot?.source?.kind === "fallback";
-        if (!serviceFallback) {
-          titles.set(session.id, title);
-          return title;
-        }
+      if (title && snapshot?.source?.kind !== "fallback") {
+        titles.set(session.id, title);
+        return title;
       }
     } catch (error) {
       ctx.logger?.warn?.(`mira-bridge: title lookup failed: ${error?.message ?? error}`);
     }
-    // DSH's deterministic fallback is the first prompt clipped by a byte budget
-    // and still carries its Markdown heading. The session log has the full first
-    // paragraph, which is a better task name and keeps working while the title
-    // provider finishes.
-    try {
-      const prompt = firstPrompt(session);
-      const summary = prompt ? summarize(prompt) : "";
-      if (summary) {
-        titles.set(session.id, summary);
-        return summary;
-      }
-    } catch (error) {
-      ctx.logger?.warn?.(`mira-bridge: prompt summary failed: ${error?.message ?? error}`);
-    }
-    if (serviceTitle) {
-      titles.set(session.id, serviceTitle);
-      return serviceTitle;
-    }
     return undefined;
+  }
+
+  /** Prompt first (best task name), then the visible session title. */
+  function titleFor(session) {
+    try {
+      const prompt = latestPrompt(session);
+      if (prompt) return { hint: prompt };
+    } catch (error) {
+      ctx.logger?.warn?.(`mira-bridge: prompt lookup failed: ${error?.message ?? error}`);
+    }
+    const title = sessionTitleOf(session);
+    return title ? { title } : {};
   }
 
   ctx.on("session/event", (session, event) => {
@@ -183,8 +167,7 @@ export function apply(ctx, config) {
       if (event.type === "session/title") {
         const title = typeof event.data?.title === "string" ? event.data.title.trim() : "";
         // A deterministic fallback is only the first prompt clipped by DSH's
-        // byte budget. Do not pin it in the cache: titleOf prefers the fuller
-        // prompt paragraph until a provider or user title arrives.
+        // byte budget; the full prompt is a better name, so it is not pinned.
         if (title && event.data?.source?.kind !== "fallback") {
           titles.set(session.id, title);
         }
@@ -194,28 +177,29 @@ export function apply(ctx, config) {
       if (event.type === "turn/start" || event.type === "turn/end") {
         if (Number.isSafeInteger(event.data?.turn)) turns.set(session.id, event.data.turn);
       }
+      const time = typeof event.time === "number" ? event.time : Date.now();
       switch (event.type) {
         case "turn/start":
           deliver(
-            buildRunningEntry({
+            turnStartEvent({
               sessionId: session.id,
               cwd: session.header?.cwd,
               turn: event.data?.turn,
-              time: typeof event.time === "number" ? event.time : Date.now(),
-              title: turnTitle(session),
+              time,
+              ...titleFor(session),
               link,
             }),
           );
           break;
         case "turn/end":
           deliver(
-            buildEntry({
+            turnEndEvent({
               sessionId: session.id,
               cwd: session.header?.cwd,
               turn: event.data?.turn,
               reason: event.data?.reason,
-              time: event.time,
-              title: turnTitle(session),
+              time,
+              ...titleFor(session),
               link,
             }),
           );
@@ -236,12 +220,12 @@ export function apply(ctx, config) {
     if (!session || skip(session) || !miraAlive()) return next();
     const token = randomUUID();
     const askedAt = Date.now();
-    const entry = buildApprovalEntry({
+    const event = approvalAskedEvent({
       sessionId: session.id,
       cwd: session.header?.cwd,
       time: askedAt,
-      title: turnTitle(session),
       turn: turns.get(session.id),
+      ...titleFor(session),
       toolName: request.toolName,
       reason: request.reason,
       approvalId: token,
@@ -251,14 +235,14 @@ export function apply(ctx, config) {
     });
     // If MIRA cannot receive the request, do not sit on the approval: hand it
     // straight back to the desktop dialog instead of waiting for a reply.
-    if (!deliver(entry)) return next();
+    if (!deliver(event)) return next();
     let decision = "defer";
     try {
       decision = await waitForDecision(token, request.signal);
     } catch (error) {
       ctx.logger?.warn?.(`mira-bridge: approval wait failed: ${error?.message ?? error}`);
     }
-    deliver(buildDismissal({ targetId: entry.id, sessionId: session.id, time: Math.max(Date.now(), askedAt + 1) }));
+    deliver(approvalClosedEvent({ sessionId: session.id, time: Math.max(Date.now(), askedAt + 1), approvalId: token }));
     if (decision === "allow") return "allowed-once";
     if (decision === "deny") return "rejected";
     return next();
@@ -267,21 +251,21 @@ export function apply(ctx, config) {
   // A pending question is a waterfall, not a session event: observe it, then
   // delegate the actual answer to the desktop client.
   ctx.on("user-questions/request", async (request, next) => {
-    let pending = [];
     let pendingSession = "";
+    let pendingQuestion = null;
     try {
       const session = request?.agent?.session;
       const questions = Array.isArray(request?.questions) ? request.questions : [];
       if (session && !skip(session) && questions.length > 0) {
         pendingSession = session.id;
-        pending = questions.map((question) => questionEntryId(session.id, question?.id ?? "unknown"));
+        pendingQuestion = questions[0]?.id ?? "unknown";
         deliver(
-          buildQuestionEntry({
+          questionAskedEvent({
             sessionId: session.id,
             cwd: session.header?.cwd,
             time: Date.now(),
-            title: turnTitle(session),
             turn: turns.get(session.id),
+            ...titleFor(session),
             questions,
             link,
           }),
@@ -293,8 +277,8 @@ export function apply(ctx, config) {
     try {
       return await next();
     } finally {
-      for (const targetId of pending) {
-        deliver(buildDismissal({ targetId, sessionId: pendingSession, time: Date.now() }));
+      if (pendingSession) {
+        deliver(questionClosedEvent({ sessionId: pendingSession, time: Date.now(), questionId: pendingQuestion }));
       }
     }
   });

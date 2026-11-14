@@ -144,14 +144,23 @@ struct PlanEditor: View {
             p.created = old.created
             p.enabled = old.enabled
         }
-        if let index = hub.data.plans.firstIndex(where: { $0.id == p.id }) {
-            hub.data.plans[index] = p
-        } else {
-            hub.data.plans.append(p)
-        }
-        if hub.save() {
+        if hub.savePlan(p) {
             hub.tick()
             dismiss()
         }
+    }
+}
+
+extension Hub {
+    func savePlan(_ plan: Plan) -> Bool {
+        let previous = data.plans
+        if let index = data.plans.firstIndex(where: { $0.id == plan.id }) {
+            data.plans[index] = plan
+        } else {
+            data.plans.append(plan)
+        }
+        if save() { return true }
+        data.plans = previous
+        return false
     }
 }

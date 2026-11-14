@@ -54,6 +54,7 @@ class DshBridgeScriptTests(unittest.TestCase):
         self.assertIn("id: mira-bridge", text)
         self.assertTrue((self.plugin / "index.js").is_file())
         self.assertTrue((self.plugin / "entry.js").is_file())
+        self.assertTrue((self.plugin / "emit.js").is_file(), "the shared emitter ships with the bridge")
 
         again = self.run_script(INSTALL)
         self.assertEqual(again.returncode, 0, again.stderr)
@@ -61,6 +62,22 @@ class DshBridgeScriptTests(unittest.TestCase):
             self.patch.read_text(encoding="utf-8").count("- id: mira-bridge"),
             1,
             "installing twice must not duplicate the row",
+        )
+
+    def test_reinstall_refreshes_the_plugin_files(self):
+        self.assertEqual(self.run_script(INSTALL).returncode, 0)
+        target = self.plugin / "entry.js"
+        target.write_text("// stale copy without a version marker\n", encoding="utf-8")
+        again = self.run_script(INSTALL)
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertEqual(target.read_text(encoding="utf-8"),
+                         (ROOT / "integrations" / "dsh" / "entry.js").read_text(encoding="utf-8"),
+                         "re-running the installer refreshes an already installed plugin")
+        self.assertIn("ADAPTER_VERSION", (self.plugin / "emit.js").read_text(encoding="utf-8"))
+        self.assertEqual(
+            self.patch.read_text(encoding="utf-8").count("- id: mira-bridge"),
+            1,
+            "refreshing files leaves the patch layer untouched",
         )
 
     def test_uninstall_round_trip_keeps_other_config(self):
@@ -137,6 +154,52 @@ class DshBridgeScriptTests(unittest.TestCase):
         self.assertIn("不是已知格式", result.stderr)
         self.assertTrue((self.plugin / "index.js").is_file())
         self.assertEqual(self.patch.read_text(encoding="utf-8"), original)
+
+    def test_quoted_id_with_comment_is_detected_without_rewriting_patch(self):
+        original = b'- insert:\r\n    - id: "mira-bridge" # custom\r\n'
+        self.patch.write_bytes(original)
+        self.assertEqual(self.run_script(INSTALL).returncode, 0)
+        self.assertEqual(self.patch.read_bytes(), original)
+        self.assertNotEqual(self.run_script(UNINSTALL).returncode, 0)
+        self.assertTrue(self.plugin.exists())
+
+    def test_commented_out_row_is_not_a_connection(self):
+        original = b"# - id: mira-bridge\r\n"
+        self.patch.write_bytes(original)
+        self.assertEqual(self.run_script(INSTALL).returncode, 0)
+        self.assertIn(b"    - id: mira-bridge\r\n", self.patch.read_bytes())
+        self.assertEqual(self.run_script(UNINSTALL).returncode, 0)
+        self.assertEqual(self.patch.read_bytes(), original)
+
+    def test_disabled_layer_keeps_its_comments_when_enabled(self):
+        self.patch.write_bytes(b"---\r\n# keep\r\n[] # disabled\r\n")
+        self.assertEqual(self.run_script(INSTALL).returncode, 0)
+        self.assertTrue(self.patch.read_bytes().startswith(b"---\r\n# keep\r\n# disabled\r\n"))
+        self.assertNotIn(b"[]", self.patch.read_bytes())
+
+    def test_invalid_patch_does_not_modify_existing_plugin(self):
+        self.plugin.mkdir(parents=True)
+        index = self.plugin / "index.js"
+        index.write_bytes(b"previous")
+        self.patch.write_bytes(b"\xff")
+        self.assertNotEqual(self.run_script(INSTALL).returncode, 0)
+        self.assertEqual(index.read_bytes(), b"previous")
+        self.assertEqual(self.patch.read_bytes(), b"\xff")
+
+    @unittest.skipIf(os.geteuid() == 0, "root can write a read-only profile")
+    def test_failed_patch_publication_restores_existing_plugin(self):
+        self.plugin.mkdir(parents=True)
+        index = self.plugin / "index.js"
+        index.write_bytes(b"previous")
+        self.profile.chmod(0o500)
+        try:
+            result = self.run_script(INSTALL)
+        finally:
+            self.profile.chmod(0o700)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.patch.exists())
+        self.assertEqual(index.read_bytes(), b"previous")
+        self.assertEqual(list(self.plugin.parent.iterdir()), [self.plugin])
 
 
 if __name__ == "__main__":

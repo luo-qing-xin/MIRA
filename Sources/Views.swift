@@ -97,7 +97,7 @@ struct StatusTag: View {
         .overlay(Capsule().stroke(inverted ? Color.white.opacity(0.22) : Color.clear, lineWidth: 1))
     }
 
-    private var palette: (Color, Color) {
+    static func palette(for text: String) -> (Color, Color) {
         switch text {
         case "待确认": return (butterInk, butter)
         case "待补充信息": return (plum, lilacWash)
@@ -111,6 +111,10 @@ struct StatusTag: View {
         default: return (quiet, oatmeal.opacity(0.55))
         }
     }
+    static func ink(for text: String) -> Color { palette(for: text).0 }
+    static func wash(for text: String) -> Color { palette(for: text).1 }
+
+    private var palette: (Color, Color) { Self.palette(for: text) }
     private var foreground: Color { palette.0 }
     private var backgroundWash: Color { palette.1 }
 }
@@ -170,6 +174,9 @@ struct HubView: View {
     @State var editing: Plan?
     @State var adding = false
     @State private var completedOpen = true
+    @State private var recordFilter: RecordFilter = .all
+    @State private var expandedRounds: Set<String> = []
+    @State private var seededHistory = false
 
     private var pending: [Entry] { hub.active.filter { $0.source != "个人计划" } }
     private var pendingCount: Int { pending.count }
@@ -194,23 +201,27 @@ struct HubView: View {
         .preferredColorScheme(.light)
         .tint(terracotta)
         .sheet(isPresented: $adding) { PlanEditor(hub: hub, plan: editing) }
+        .sheet(isPresented: $hub.showWatchEditor) {
+            WebWatchEditor(hub: hub, watchID: hub.editingWatchID)
+                .id(hub.editingWatchID ?? "new-web-watch")
+        }
     }
 
     // MARK: 顶部
 
     private var masthead: some View {
         HStack(alignment: .bottom, spacing: 0) {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 0) {
-                    Text("mira").font(numeral(42)).foregroundStyle(ink)
-                    Text(".").font(numeral(42)).foregroundStyle(terracotta)
+                    Text("mira").font(numeral(36)).foregroundStyle(ink)
+                    Text(".").font(numeral(36)).foregroundStyle(terracotta)
                 }
                 Text("TODAY, SLOWLY")
                     .font(ui(9, .semibold)).tracking(3.2).foregroundStyle(faint)
             }
             Spacer()
             HStack(spacing: 24) {
-                ForEach(["今日", "计划", "记录"], id: \.self) { tab in
+                ForEach(["今日", "任务库", "监控", "计划", "记录"], id: \.self) { tab in
                     navItem(tab)
                 }
                 Rectangle().fill(oatmeal).frame(width: 1, height: 14).padding(.horizontal, 2)
@@ -221,7 +232,7 @@ struct HubView: View {
             .padding(.bottom, 2)
         }
         .padding(.horizontal, 44)
-        .padding(.top, 8)
+        .padding(.top, 4)
     }
 
     private func navItem(_ tab: String) -> some View {
@@ -277,13 +288,15 @@ struct HubView: View {
         .background(RoundedRectangle(cornerRadius: 9).fill(color.opacity(0.06)))
         .overlay(RoundedRectangle(cornerRadius: 9).stroke(color.opacity(0.16), lineWidth: 1))
         .padding(.horizontal, 44)
-        .padding(.top, 8)
+        .padding(.top, 4)
     }
 
     // MARK: 页面切换
 
     @ViewBuilder private var content: some View {
         switch hub.section {
+        case "任务库": TaskLibraryPage(hub: hub)
+        case "监控": WebWatchPage(hub: hub)
         case "计划": plansPage
         case "记录": historyPage
         case "设置": settingsPage
@@ -831,43 +844,139 @@ struct HubView: View {
     // MARK: 记录
 
     private var historyPage: some View {
-        HStack(alignment: .top, spacing: 0) {
+        let snapshot = Date()
+        let rounds = HistoryGrouping.rounds(
+            from: hub.data.entries.filter { Schedule.inHistory($0, now: snapshot) })
+        return HStack(alignment: .top, spacing: 0) {
             dateRail.frame(width: 148).padding(.trailing, 22)
             columnLine
             VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("记录").font(editorial(30))
-                    Spacer()
-                    Text("每一步，都有迹可循。").font(ui(10)).foregroundStyle(faint)
-                }
+                Text("记录").font(editorial(30))
+                Text("每一步，都有迹可循；同一轮只写一行。")
+                    .font(ui(10)).foregroundStyle(quiet).padding(.top, 6)
+                historyFilterBar(rounds).padding(.top, 14)
                 ScrollView(showsIndicators: false) {
-                    LazyVStack(spacing: 0) { historyRows }
-                        .padding(.top, 10)
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        historyContent(rounds)
+                    }
+                    .padding(.top, 2)
+                    .padding(.bottom, 26)
                 }
             }
             .padding(.leading, 26)
-            .frame(maxWidth: 930, alignment: .leading)
+            .frame(maxWidth: 860, alignment: .leading)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 44)
         .padding(.top, 14)
         .frame(maxHeight: .infinity)
+        .onAppear { seedExpandedRound(rounds) }
     }
 
-    @ViewBuilder private var historyRows: some View {
-        let items = hub.data.entries.filter { Schedule.inHistory($0, now: Date()) }
-        if items.isEmpty {
+    private func seedExpandedRound(_ rounds: [HistoryRound]) {
+        guard !seededHistory else { return }
+        seededHistory = true
+        if let newest = rounds.first { expandedRounds.insert(newest.id) }
+    }
+
+    private func toggleRound(_ round: HistoryRound) {
+        if expandedRounds.contains(round.id) {
+            expandedRounds.remove(round.id)
+        } else {
+            expandedRounds.insert(round.id)
+        }
+    }
+
+    private func historyFilterBar(_ rounds: [HistoryRound]) -> some View {
+        HStack(spacing: 6) {
+            ForEach(RecordFilter.allCases) { filter in
+                let count = rounds.filter(filter.matches).count
+                let on = recordFilter == filter
+                Button { recordFilter = filter } label: {
+                    HStack(spacing: 5) {
+                        Text(filter.title).font(ui(9.5, .semibold))
+                        Text("\(count)").font(numeral(8.5))
+                    }
+                    .foregroundStyle(on ? warmPaperInk : quiet)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(on ? ink : Color.clear))
+                    .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(on ? Color.clear : oatmeal, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(filter.title)，\(count) 轮")
+            }
+            Spacer(minLength: 8)
+            Text("共 \(rounds.count) 轮").font(numeral(8.5)).foregroundStyle(faint)
+        }
+        .padding(.bottom, 10)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(oatmeal.opacity(0.7)).frame(height: 1)
+        }
+    }
+
+    @ViewBuilder private func historyContent(_ rounds: [HistoryRound]) -> some View {
+        let filtered = rounds.filter(recordFilter.matches)
+        if rounds.isEmpty {
             VStack(alignment: .leading, spacing: 9) {
                 Text("还没有历史记录。").font(editorial(20))
                 Text("本轮结束、已处理与已过期的提醒会保存在这里。")
                     .font(ui(11)).foregroundStyle(quiet)
             }
-            .padding(.vertical, 36)
+            .padding(.top, 40)
             .frame(maxWidth: .infinity, alignment: .leading)
+        } else if filtered.isEmpty {
+            Text("没有「\(recordFilter.title)」的记录。")
+                .font(ui(11)).foregroundStyle(quiet)
+                .padding(.top, 40)
         } else {
-            ForEach(items.prefix(60)) { entry in
-                HistoryRow(hub: hub, entry: entry)
+            ForEach(dayBuckets(filtered)) { bucket in
+                historyDay(bucket)
+            }
+        }
+    }
+
+    private func dayBuckets(_ rounds: [HistoryRound]) -> [HistoryDay] {
+        let calendar = Calendar.current
+        var order: [Date] = []
+        var buckets: [Date: [HistoryRound]] = [:]
+        for round in rounds {
+            let day = calendar.startOfDay(for: round.end)
+            if buckets[day] == nil { order.append(day) }
+            buckets[day, default: []].append(round)
+        }
+        return order.map { HistoryDay(id: $0, rounds: buckets[$0] ?? []) }
+    }
+
+    private func historyDay(_ bucket: HistoryDay) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(RecordText.day(bucket.id)).font(editorial(11.5)).foregroundStyle(ink)
+                Text(RecordText.dayNote(bucket.id)).font(ui(9)).foregroundStyle(faint)
                 Rectangle().fill(oatmeal.opacity(0.55)).frame(height: 1)
+                Text("\(bucket.rounds.count) 轮 · \(bucket.rounds.reduce(0) { $0 + $1.count }) 条")
+                    .font(numeral(8.5)).foregroundStyle(faint)
+            }
+            .padding(.top, 16)
+            .padding(.bottom, 4)
+
+            ZStack(alignment: .topLeading) {
+                Rectangle().fill(oatmeal.opacity(0.65))
+                    .frame(width: 1)
+                    .frame(maxHeight: .infinity)
+                    .padding(.top, 22)
+                    .padding(.bottom, 16)
+                    .offset(x: 56.5)
+                VStack(spacing: 0) {
+                    ForEach(bucket.rounds) { round in
+                        HistoryRoundRow(hub: hub, round: round,
+                                        expanded: expandedRounds.contains(round.id)) {
+                            toggleRound(round)
+                        }
+                    }
+                }
             }
         }
     }
@@ -1056,7 +1165,9 @@ struct EntryCard: View {
 
     @ViewBuilder private var actions: some View {
         HStack(spacing: 7) {
-            if entry.status == "待确认", entry.token != nil {
+            if entry.codexID != nil {
+                CodexApprovalControls(hub: hub, entry: entry)
+            } else if entry.status == "待确认", entry.token != nil {
                 Button("允许一次") { hub.decide(entry, "allow") }
                     .buttonStyle(EditorialButtonStyle(kind: highlighted ? .cream : .rust))
                 Button("拒绝") { hub.decide(entry, "deny") }
@@ -1077,7 +1188,7 @@ struct EntryCard: View {
                     Button("10 分钟后") { hub.snooze(entry.id) }
                         .buttonStyle(EditorialButtonStyle(kind: .outline))
                 }
-                if !entry.automaticallyArchived {
+                if !entry.automaticallyArchived && !entry.courseUpdate {
                     Button(entry.source == "个人计划" ? "完成" : "标为已处理") { hub.finish(entry.id) }
                         .buttonStyle(EditorialButtonStyle(kind: .text))
                 }
@@ -1281,49 +1392,202 @@ struct PlanCard: View {
 
 // MARK: - 记录行
 
-struct HistoryRow: View {
+struct HistoryRoundRow: View {
     @ObservedObject var hub: Hub
-    let entry: Entry
+    let round: HistoryRound
+    let expanded: Bool
+    let onToggle: () -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: 16) {
+        HStack(alignment: .top, spacing: 9) {
+            Text(RecordText.time(round.end))
+                .font(numeral(10)).foregroundStyle(quiet)
+                .frame(width: 42, alignment: .trailing)
+                .padding(.top, 2)
+
+            node.frame(width: 12).padding(.top, 3)
+
             VStack(alignment: .leading, spacing: 3) {
-                Text(entry.date.formatted(.dateTime.month(.twoDigits).day(.twoDigits)))
-                    .font(numeral(10.5)).foregroundStyle(quiet)
-                Text(entry.date.formatted(date: .omitted, time: .shortened))
+                header
+                Text(round.title)
+                    .font(editorial(15.5)).foregroundStyle(ink2)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                metaLine
+                if expanded { steps.padding(.top, 6) }
+            }
+            .padding(.bottom, 10)
+        }
+        .padding(.top, 9)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onToggle)
+        .accessibilityElement(children: .contain)
+        .accessibilityHint(expanded ? "收起这一轮的经过" : "展开这一轮的经过")
+    }
+
+    private var header: some View {
+        HStack(spacing: 7) {
+            Text(round.source).font(ui(9.5, .semibold)).foregroundStyle(quiet)
+            RecordStatusDot(text: round.status)
+            if round.count > 1, round.duration >= 30 {
+                Text(RecordText.duration(round.duration))
                     .font(numeral(8.5)).foregroundStyle(faint)
             }
-            .frame(width: 52, alignment: .leading)
-            .padding(.top, 2)
-
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 7) {
-                    SourceGlyph(source: entry.source)
-                    Text(entry.source).font(ui(9.5, .semibold)).foregroundStyle(quiet)
-                    StatusTag(text: entry.historyStatus)
-                }
-                Text(entry.displayTitle)
-                    .font(editorial(15.5)).foregroundStyle(ink2)
-                    .fixedSize(horizontal: false, vertical: true)
-                if !entry.body.isEmpty {
-                    Text(entry.body).font(ui(10)).foregroundStyle(quiet).lineLimit(1)
-                }
-            }
-
             Spacer(minLength: 8)
-
-            if !entry.link.isEmpty {
-                Button { hub.open(entry) } label: {
+            if !round.link.isEmpty {
+                Button { hub.open(round.last) } label: {
                     HStack(spacing: 3) {
                         Text("打开")
                         Image(systemName: "arrow.up.right").font(.system(size: 8, weight: .semibold))
                     }
+                    .font(ui(9.5, .medium))
+                    .foregroundStyle(quiet)
                 }
-                .buttonStyle(EditorialButtonStyle(kind: .text))
-                .padding(.top, 2)
+                .buttonStyle(.plain)
+                .help("打开原会话")
             }
         }
-        .padding(.vertical, 12)
+    }
+
+    private var metaLine: some View {
+        HStack(spacing: 5) {
+            Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                .font(.system(size: 7, weight: .bold))
+                .foregroundStyle(faint.opacity(0.9))
+            Text(meta).font(ui(9)).foregroundStyle(faint).lineLimit(1)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var meta: String {
+        var parts: [String] = []
+        if round.count > 1 {
+            parts.append("\(RecordText.time(round.start)) 开始")
+            parts.append("\(round.count) 条事件")
+        } else if !round.last.body.isEmpty {
+            parts.append(round.last.body)
+        }
+        if let thread = round.thread, !thread.isEmpty {
+            parts.append("会话 \(RecordText.session(thread))")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var node: some View {
+        ZStack {
+            Circle().fill(cream).frame(width: 14, height: 14)
+            if hollow {
+                Circle().stroke(nodeInk, lineWidth: 1.3).frame(width: 6.5, height: 6.5)
+            } else {
+                Circle().fill(nodeInk.opacity(0.16)).frame(width: 13, height: 13)
+                Circle().fill(nodeInk).frame(width: 6.5, height: 6.5)
+            }
+        }
+    }
+
+    private var hollow: Bool {
+        ["已处理", "已过期"].contains(round.status)
+    }
+
+    private var nodeInk: Color {
+        StatusTag.palette(for: round.status).0
+    }
+
+    private var steps: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(round.entries) { entry in
+                HStack(spacing: 8) {
+                    Text(RecordText.time(entry.date))
+                        .font(numeral(8.5)).foregroundStyle(faint)
+                        .frame(width: 30, alignment: .leading)
+                    Text(RecordText.step(entry))
+                        .font(ui(9)).foregroundStyle(quiet)
+                        .lineLimit(1)
+                    Spacer(minLength: 6)
+                    Text(RecordText.stepTag(entry))
+                        .font(ui(8, .semibold)).foregroundStyle(faint)
+                        .padding(.horizontal, 5).padding(.vertical, 2)
+                        .background(RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(oatmeal.opacity(0.35)))
+                }
+            }
+        }
+        .padding(.leading, 10)
+        .frame(maxWidth: 430, alignment: .leading)
+        .overlay(alignment: .leading) {
+            Rectangle().fill(oatmeal.opacity(0.8)).frame(width: 1)
+        }
+    }
+}
+
+struct RecordStatusDot: View {
+    let text: String
+
+    var body: some View {
+        let inkColor = StatusTag.palette(for: text).0
+        return HStack(spacing: 4) {
+            Circle().fill(inkColor).frame(width: 4, height: 4)
+            Text(text).font(ui(9, .semibold)).tracking(0.3).foregroundStyle(inkColor)
+        }
+    }
+}
+
+enum RecordText {
+    static func time(_ date: Date) -> String {
+        let parts = Calendar.current.dateComponents([.hour, .minute], from: date)
+        return String(format: "%02d:%02d", parts.hour ?? 0, parts.minute ?? 0)
+    }
+
+    /// DSH 的 session id 形如 session-f9f9a80a-…；去掉前缀再截断才有辨识度。
+    static func session(_ thread: String) -> String {
+        var value = thread
+        if value.hasPrefix("session-") { value.removeFirst("session-".count) }
+        return String(value.prefix(8))
+    }
+
+    static func day(_ date: Date) -> String {
+        let parts = Calendar.current.dateComponents([.month, .day], from: date)
+        return "\(parts.month ?? 0) 月 \(parts.day ?? 1) 日"
+    }
+
+    static func dayNote(_ date: Date) -> String {
+        let names = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
+        let index = max(0, min(6, Calendar.current.component(.weekday, from: date) - 1))
+        let name = names[index]
+        if Calendar.current.isDateInToday(date) { return "\(name) · 今天" }
+        if Calendar.current.isDateInYesterday(date) { return "\(name) · 昨天" }
+        return name
+    }
+
+    static func duration(_ interval: TimeInterval) -> String {
+        let total = max(0, Int(interval.rounded()))
+        let minutes = total / 60
+        let seconds = total % 60
+        if minutes == 0 { return "\(seconds) 秒" }
+        if minutes < 60 {
+            return seconds == 0 ? "\(minutes) 分钟" : "\(minutes) 分 \(seconds) 秒"
+        }
+        let hours = minutes / 60
+        let rest = minutes % 60
+        return rest == 0 ? "\(hours) 小时" : "\(hours) 小时 \(rest) 分"
+    }
+
+    static func step(_ entry: Entry) -> String {
+        switch entry.status {
+        case "运行中": return "开始处理这一轮"
+        case "本轮结束": return "本轮结束，结果已收下"
+        case "任务失败": return "本轮执行失败"
+        case "已中断": return "本轮被中断"
+        case "已拦截": return "提交阶段被拦截"
+        case "已达上限": return "达到输出上限"
+        case "待确认": return "请求你确认一次操作"
+        case "待补充信息": return "需要你补充信息"
+        default: return entry.body.isEmpty ? entry.displayTitle : entry.body
+        }
+    }
+
+    static func stepTag(_ entry: Entry) -> String {
+        entry.status == "运行中" ? "处理中" : entry.status
     }
 }
 
@@ -1373,7 +1637,11 @@ struct ReminderView: View {
                     .padding(.top, 5)
             }
 
-            actions.padding(.top, 14)
+            if entry.codexID != nil {
+                CodexApprovalControls(hub: hub, entry: entry, dismiss: dismiss).padding(.top, 14)
+            } else {
+                actions.padding(.top, 14)
+            }
 
             if entry.token != nil, entry.status == "待确认" {
                 Text("只对这一次请求生效；超时或关闭会交还 DSH 原生对话框。")
@@ -1412,7 +1680,7 @@ struct ReminderView: View {
                 if entry.canSnooze {
                     Button("10 分钟后") { hub.snooze(entry.id); dismiss() }
                         .buttonStyle(EditorialButtonStyle(kind: .outline))
-                } else if !entry.automaticallyArchived && hub.data.entries.contains(where: { $0.id == entry.id && !$0.done }) {
+                } else if !entry.automaticallyArchived && !entry.courseUpdate && hub.data.entries.contains(where: { $0.id == entry.id && !$0.done }) {
                     Button("标为已处理") {
                         if hub.finish(entry.id) { dismiss() } else { hub.showMain?(); dismiss() }
                     }

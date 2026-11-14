@@ -11,4 +11,7 @@
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>
+<key>NSAppTransportSecurity</key><dict>
+  <key>NSAllowsArbitraryLoadsInWebContent</key><true/>
+</dict>
 </dict></plist>

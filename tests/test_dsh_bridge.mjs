@@ -1,36 +1,31 @@
-// Unit checks for the DSH bridge. Run: node --test tests/test_dsh_bridge.mjs
+// Contract tests for the DSH adapter. Run: node --test tests/test_dsh_bridge.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
+import { ADAPTER_VERSION, build, emit, hint } from "../integrations/emit/emit.js";
 import {
-  approvalEntryId,
-  buildApprovalEntry,
-  buildDismissal,
-  buildEntry,
-  buildQuestionEntry,
-  buildRunningEntry,
-  entryId,
+  approvalAskedEvent,
+  approvalClosedEvent,
+  approvalKey,
   isSubagent,
-  projectName,
-  questionEntryId,
-  runningEntryId,
-  reasonInfo,
-  promptTitle,
-  summarize,
-  writeEntry,
+  questionAskedEvent,
+  questionClosedEvent,
+  questionKey,
+  reasonKind,
+  turnEndEvent,
+  turnKey,
+  turnStartEvent,
 } from "../integrations/dsh/entry.js";
 import { apply } from "../integrations/dsh/index.js";
 
 const TIME = 1_764_000_000_123;
+const repoRoot = fileURLToPath(new URL("../", import.meta.url));
 
-function alive(root) {
-  writeFileSync(join(root, "heartbeat"), String(Date.now()));
-}
-
-function inboxEntries(root) {
+function events(root) {
   try {
     return readdirSync(join(root, "inbox"))
       .filter((file) => file.endsWith(".json"))
@@ -39,6 +34,15 @@ function inboxEntries(root) {
   } catch {
     return [];
   }
+}
+
+function alive(root) {
+  writeFileSync(join(root, "heartbeat"), String(Date.now()));
+}
+
+function decide(root, token, decision) {
+  mkdirSync(join(root, "decisions"), { recursive: true });
+  writeFileSync(join(root, "decisions", token + ".json"), JSON.stringify({ token, decision }));
 }
 
 async function waitFor(predicate, timeoutMs = 2000) {
@@ -51,208 +55,225 @@ async function waitFor(predicate, timeoutMs = 2000) {
   throw new Error("condition not met in time");
 }
 
-function decide(root, token, decision) {
-  mkdirSync(join(root, "decisions"), { recursive: true });
-  writeFileSync(join(root, "decisions", token + ".json"), JSON.stringify({ token, decision }));
-}
-
-function inboxCount(root) {
-  try {
-    return readdirSync(join(root, "inbox")).length;
-  } catch {
-    return 0;
-  }
-}
-
 function session(overrides = {}) {
+  return { id: "session-1234-abcd", header: { cwd: "/Users/yunye/MIRA", ...overrides } };
+}
+
+function userMessage(text) {
+  return { type: "user/message", data: { source: { kind: "user" }, content: [{ type: "text", text }] } };
+}
+
+function sessionWithEvents(list, overrides = {}) {
   return {
     id: "session-1234-abcd",
+    seq: list.length,
     header: { cwd: "/Users/yunye/MIRA", ...overrides },
+    eventAt: (index) => list[index],
   };
 }
 
-test("maps every documented turn-end reason", () => {
-  assert.deepEqual(reasonInfo({ kind: "completed" }), {
-    kind: "completed",
-    status: "本轮结束",
-    body: "DSH 本轮已结束，请打开原会话查看结果。",
-  });
-  assert.equal(reasonInfo({ kind: "error", error: { code: "UNKNOWN" } }).status, "任务失败");
-  assert.equal(reasonInfo({ kind: "aborted", reason: {} }).status, "已中断");
-  assert.equal(reasonInfo({ kind: "blocked" }).status, "已拦截");
-  assert.equal(reasonInfo({ kind: "max-tokens" }).status, "已达上限");
-  assert.equal(reasonInfo({ kind: "interrupted" }).status, "已中断");
-});
-
-test("degrades on unknown or malformed reasons instead of throwing", () => {
-  assert.deepEqual(reasonInfo({ kind: "future-reason" }), {
-    kind: "future-reason",
-    status: "本轮结束",
-    body: "DSH 本轮已结束，请打开原会话查看结果。",
-  });
-  assert.equal(reasonInfo(null).kind, "unknown");
-  assert.equal(reasonInfo(undefined).status, "本轮结束");
-  assert.equal(reasonInfo({ kind: 42 }).kind, "unknown");
-});
-
-test("reads the project name from the working directory", () => {
-  assert.equal(projectName("/Users/yunye/MIRA"), "MIRA");
-  assert.equal(projectName("/Users/yunye/MIRA/"), "MIRA");
-  assert.equal(projectName(""), "DSH");
-  assert.equal(projectName(undefined), "DSH");
-});
-
-test("detects subagent sessions", () => {
-  assert.equal(isSubagent(session({ origin: "subagent" })), true);
-  assert.equal(isSubagent(session()), false);
-  assert.equal(isSubagent(undefined), false);
-});
-
-test("builds one inbox entry per finished turn", () => {
-  const entry = buildEntry({
-    sessionId: "session-1234-abcd",
-    cwd: "/Users/yunye/MIRA",
-    turn: 3,
-    reason: { kind: "completed" },
-    time: TIME,
-    title: "设计 AI 任务与提醒中心",
-  });
-  assert.equal(entry.id, entryId("session-1234-abcd", 3, "completed"));
-  assert.equal(entry.title, "设计 AI 任务与提醒中心");
-  assert.equal(entry.source, "DSH · MIRA");
-  assert.equal(entry.status, "本轮结束");
-  assert.equal(entry.link, "dsh://open");
-  assert.equal(entry.thread, "session-1234-abcd");
-  assert.equal(entry.date, TIME / 1000);
-  assert.equal(entry.done, false);
-  assert.equal(entry.notified, false);
-});
-
-test("keeps ids stable for one turn and distinct across turns", () => {
-  const base = { sessionId: "s", cwd: "/x", reason: { kind: "completed" }, time: TIME };
-  assert.equal(buildEntry({ ...base, turn: 1 }).id, buildEntry({ ...base, turn: 1 }).id);
-  assert.notEqual(buildEntry({ ...base, turn: 1 }).id, buildEntry({ ...base, turn: 2 }).id);
-  assert.notEqual(
-    buildEntry({ ...base, turn: 1 }).id,
-    buildEntry({ ...base, turn: 1, reason: { kind: "error" } }).id,
-  );
-});
-
-test("falls back to project plus round when no title exists", () => {
-  const entry = buildEntry({
-    sessionId: "session-1234-abcd",
-    cwd: "/Users/yunye/项目",
-    turn: 1,
-    reason: { kind: "completed" },
-    time: TIME,
-  });
-  assert.equal(entry.title, "项目 · 第 1 轮");
-  const blank = buildEntry({
-    sessionId: "session-1234-abcd",
-    cwd: "/Users/yunye/项目",
-    turn: 1,
-    reason: { kind: "completed" },
-    time: TIME,
-    title: "   ",
-  });
-  assert.equal(blank.title, entry.title);
-  assert.equal(buildEntry({
-    sessionId: "session-1234-abcd",
-    cwd: "/Users/yunye/项目",
-    turn: 4,
-    reason: { kind: "completed" },
-    time: TIME,
-  }).title, "项目 · 第 4 轮", "each turn keeps its own round label");
-});
-
-test("writes a private, atomically renamed JSON file", () => {
-  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
-  const entry = buildEntry({
-    sessionId: "session-1234-abcd",
-    cwd: "/Users/yunye/MIRA",
-    turn: 2,
-    reason: { kind: "completed" },
-    time: TIME,
-  });
-  const path = writeEntry(root, entry);
-  assert.equal(statSync(root).mode & 0o777, 0o700);
-  assert.equal(statSync(path).mode & 0o777, 0o600);
-  assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), entry);
-  assert.deepEqual(
-    readdirSync(join(root, "inbox")),
-    [path.split("/").pop()],
-    "no temporary file survives delivery",
-  );
-  assert.match(path.split("/").pop(), /^\d{20}-[0-9a-f]{64}\.json$/);
-});
-
-test("repeated delivery of the same turn collapses to one file", () => {
-  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
-  const entry = buildEntry({
-    sessionId: "s",
-    cwd: "/x",
-    turn: 1,
-    reason: { kind: "completed" },
-    time: TIME,
-  });
-  writeEntry(root, entry);
-  writeEntry(root, entry);
-  assert.equal(inboxCount(root), 1);
-});
-
-test("turn start produces one running entry and turn end adds the result", () => {
-  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
-  const handlers = new Map();
-  const ctx = {
-    on: (event, handler) => handlers.set(event, handler),
-    logger: { warn: () => {}, debug: () => {} },
-  };
-  apply(ctx, { dataDir: root });
-
-  const emit = (session, event) => handlers.get("session/event")(session, event);
-  emit(session(), { type: "session/title", time: TIME, data: { title: "真实任务" } });
-  emit(session(), { type: "turn/start", time: TIME, data: { turn: 1 } });
-  assert.equal(inboxCount(root), 1, "running entry is delivered");
-  const running = inboxEntries(root).find((entry) => entry.status === "运行中");
-  assert.ok(running, "running entry exists");
-  assert.equal(running.title, "真实任务");
-  assert.equal(running.id, runningEntryId("session-1234-abcd", 1));
-
-  emit(session(), { type: "turn/end", time: TIME, data: { turn: 1, reason: { kind: "completed" } } });
-  assert.equal(inboxCount(root), 2);
-  const ended = inboxEntries(root).find((entry) => entry.status === "本轮结束");
-  assert.ok(ended, "turn end is delivered");
-  assert.equal(ended.title, "真实任务");
-  assert.equal(ended.thread, running.thread);
-});
-
-test("builds a lightweight running entry", () => {
-  const entry = buildRunningEntry({
-    sessionId: "session-9",
-    cwd: "/Users/yunye/MIRA",
-    turn: 2,
-    time: TIME,
-    title: "设计 AI 任务与提醒中心",
-  });
-  assert.equal(entry.id, runningEntryId("session-9", 2));
-  assert.equal(entry.status, "运行中");
-  assert.equal(entry.title, "设计 AI 任务与提醒中心");
-  assert.equal(entry.thread, "session-9");
-  assert.equal(entry.notified, false);
-});
-
-test("skips subagent children", () => {
-  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
+function harness(root, config = {}) {
   const handlers = new Map();
   apply(
     { on: (event, handler) => handlers.set(event, handler), logger: { warn: () => {} } },
-    { dataDir: root },
+    { dataDir: root, approvalTimeoutMs: 3000, pollMs: 10, ...config },
   );
+  return handlers;
+}
+
+// MARK: - Emitter
+
+test("the emitter stamps the envelope and bounds the title hint", () => {
+  const event = build(
+    {
+      adapter: "Demo",
+      name: "Demo Tool",
+      kind: "turn.end",
+      session: " s1 ",
+      turn: 2.9,
+      hint: "第一段\n\n第二段",
+      unknown: "dropped",
+    },
+    TIME,
+  );
+  assert.equal(event.protocol, "mira.adapter/1");
+  assert.equal(event.adapter.id, "demo");
+  assert.equal(event.adapter.name, "Demo Tool");
+  assert.equal(event.adapter.version, ADAPTER_VERSION);
+  assert.equal(event.session, "s1");
+  assert.equal(event.turn, 2);
+  assert.equal(event.time, TIME);
+  assert.equal(event.titleHint, "第一段");
+  assert.equal(event.unknown, undefined);
+
+  const long = build({ adapter: "x", kind: "turn.start", session: "s", hint: "长".repeat(400) }, TIME);
+  assert.equal(Array.from(long.titleHint).length, 160);
+});
+
+test("the emitter rejects events without an adapter, kind or session", () => {
+  assert.throws(() => build({ kind: "turn.end", session: "s" }, TIME), /adapter/);
+  assert.throws(() => build({ adapter: "dsh", session: "s" }, TIME), /kind/);
+  assert.throws(() => build({ adapter: "dsh", kind: "turn.end" }, TIME), /session/);
+});
+
+test("the emitter writes atomically with private permissions", () => {
+  const root = mkdtempSync(join(tmpdir(), "mira-emit-"));
+  const path = emit(root, { adapter: "dsh", kind: "turn.end", session: "s", reason: "completed" }, TIME);
+  const parsed = JSON.parse(readFileSync(path, "utf8"));
+  assert.equal(parsed.protocol, "mira.adapter/1");
+  assert.equal(statSync(path).mode & 0o777, 0o600);
+  assert.equal(statSync(join(root, "inbox")).mode & 0o777, 0o700);
+  assert.match(basename(path), /^\d{20}-[0-9a-f-]+\.json$/);
+});
+
+test("hints keep only the first paragraph", () => {
+  assert.equal(hint("# 标题\n\n正文"), "# 标题");
+  assert.equal(hint("   "), null);
+  assert.equal(hint(undefined), null);
+});
+
+test("the JS emitter version matches the Swift receiver", () => {
+  const source = readFileSync(join(repoRoot, "Sources/Core.swift"), "utf8");
+  const match = source.match(/static let current = "([^"]+)"/);
+  assert.ok(match, "Core.swift declares IntegrationVersion.current");
+  assert.equal(ADAPTER_VERSION, match[1]);
+});
+
+// MARK: - DSH mapping
+
+test("turn reasons map onto the contract vocabulary", () => {
+  for (const kind of ["completed", "error", "aborted", "blocked", "max-tokens", "interrupted"]) {
+    assert.equal(reasonKind({ kind }), kind);
+  }
+  assert.equal(reasonKind({ kind: "future-reason" }), "completed", "unknown reasons degrade like before");
+  assert.equal(reasonKind(null), "completed");
+  assert.equal(reasonKind({ kind: 42 }), "completed");
+});
+
+test("turn events carry stable dedupe keys and no reminder policy", () => {
+  const start = turnStartEvent({ sessionId: "s1", cwd: "/x", turn: 2, time: TIME, hint: "整理记录" });
+  assert.equal(start.kind, "turn.start");
+  assert.equal(start.dedupeKey, turnKey("s1", 2, "start"));
+  assert.equal(start.status, undefined, "the adapter does not decide reminder status");
+  assert.equal(start.hint, "整理记录");
+  assert.equal(start.cwd, "/x");
+  assert.equal(start.turn, 2);
+
+  const end = turnEndEvent({ sessionId: "s1", turn: 2, time: TIME, reason: { kind: "error" } });
+  assert.equal(end.kind, "turn.end");
+  assert.equal(end.reason, "error");
+  assert.equal(
+    turnEndEvent({ sessionId: "s1", turn: 2, time: TIME, reason: { kind: "error" } }).dedupeKey,
+    end.dedupeKey,
+    "a repeated delivery collapses",
+  );
+  assert.notEqual(
+    turnEndEvent({ sessionId: "s1", turn: 3, time: TIME, reason: { kind: "error" } }).dedupeKey,
+    end.dedupeKey,
+  );
+});
+
+test("approval events share one key with their dismissal", () => {
+  const asked = approvalAskedEvent({
+    sessionId: "s1",
+    cwd: "/x",
+    turn: 1,
+    time: TIME,
+    hint: "整理记录",
+    toolName: "bash",
+    reason: "写入工作区之外的文件",
+    approvalId: "a1",
+    token: "abcd-1234",
+    ttlMs: 60_000,
+  });
+  assert.equal(asked.kind, "approval.asked");
+  assert.equal(asked.dedupeKey, approvalKey("s1", "a1"));
+  assert.equal(asked.approval.tool, "bash");
+  assert.equal(asked.approval.reason, "写入工作区之外的文件");
+  assert.equal(asked.approval.token, "abcd-1234");
+  assert.equal(asked.approval.ttlMs, 60_000);
+
+  const closed = approvalClosedEvent({ sessionId: "s1", time: TIME + 1, approvalId: "a1" });
+  assert.equal(closed.kind, "approval.closed");
+  assert.equal(closed.closes, asked.dedupeKey);
+  assert.equal(closed.closes, approvalKey("s1", "a1"));
+  assert.equal(closed.hint, undefined);
+});
+
+test("question events use the first question as their identity", () => {
+  const asked = questionAskedEvent({
+    sessionId: "s1",
+    time: TIME,
+    questions: [
+      { id: "q1", question: "选哪个方案？" },
+      { id: "q2", question: "什么时候？" },
+    ],
+  });
+  assert.equal(asked.kind, "question.asked");
+  assert.equal(asked.dedupeKey, questionKey("s1", "q1"));
+  assert.equal(asked.questions.length, 2);
+  assert.equal(asked.questions[0].question, "选哪个方案？");
+  const closed = questionClosedEvent({ sessionId: "s1", time: TIME + 1, questionId: "q1" });
+  assert.equal(closed.closes, asked.dedupeKey);
+});
+
+test("detects subagent sessions", () => {
+  assert.equal(isSubagent(sessionWithEvents([], { origin: "subagent" })), true);
+  assert.equal(isSubagent(sessionWithEvents([])), false);
+  assert.equal(isSubagent(undefined), false);
+});
+
+// MARK: - DSH plugin integration
+
+test("turn start and end deliver contract events", () => {
+  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
+  const handlers = harness(root);
+  const s = sessionWithEvents([userMessage("把设置页的按钮改大一些")]);
+  const fire = (event) => handlers.get("session/event")(s, event);
+
+  fire({ type: "turn/start", time: TIME, data: { turn: 1 } });
+  fire({ type: "turn/end", time: TIME + 1, data: { turn: 1, reason: { kind: "completed" } } });
+
+  const [running, ended] = events(root);
+  assert.equal(running.kind, "turn.start");
+  assert.equal(running.adapter.id, "dsh");
+  assert.equal(running.titleHint, "把设置页的按钮改大一些");
+  assert.equal(running.link, "dsh://open");
+  assert.equal(ended.kind, "turn.end");
+  assert.equal(ended.reason, "completed");
+  assert.equal(ended.time, TIME + 1);
+});
+
+test("a session title is used only when no prompt is readable", () => {
+  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
+  const handlers = harness(root);
+  const s = sessionWithEvents([]);
+  handlers.get("session/event")(s, { type: "session/title", time: TIME, data: { title: "修复对比度", source: { kind: "provider" } } });
+  handlers.get("session/event")(s, { type: "turn/end", time: TIME, data: { turn: 1, reason: { kind: "completed" } } });
+  const [ended] = events(root);
+  assert.equal(ended.title, "修复对比度");
+  assert.equal(ended.titleHint, undefined);
+});
+
+test("a deterministic fallback title is not forwarded", () => {
+  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
+  const handlers = harness(root);
+  const s = sessionWithEvents([]);
+  handlers.get("session/event")(s, { type: "session/title", time: TIME, data: { title: "# 任务：被截断", source: { kind: "fallback" } } });
+  handlers.get("session/event")(s, { type: "turn/end", time: TIME, data: { turn: 2, reason: { kind: "completed" } } });
+  const [ended] = events(root);
+  assert.equal(ended.title, undefined, "MIRA derives a cleaner fallback from the project and turn");
+  assert.equal(ended.turn, 2);
+});
+
+test("subagent sessions are skipped", () => {
+  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
+  const handlers = harness(root);
   handlers.get("session/event")(
-    session({ origin: "subagent" }),
+    sessionWithEvents([], { origin: "subagent" }),
     { type: "turn/end", time: TIME, data: { turn: 1, reason: { kind: "completed" } } },
   );
-  assert.equal(inboxCount(root), 0);
+  assert.equal(events(root).length, 0);
 });
 
 test("a broken inbox never fails the turn", () => {
@@ -263,7 +284,7 @@ test("a broken inbox never fails the turn", () => {
     { dataDir: "/dev/null/mira" },
   );
   assert.doesNotThrow(() => {
-    handlers.get("session/event")(session(), {
+    handlers.get("session/event")(sessionWithEvents([]), {
       type: "turn/end",
       time: TIME,
       data: { turn: 1, reason: { kind: "completed" } },
@@ -273,98 +294,42 @@ test("a broken inbox never fails the turn", () => {
   assert.match(warnings[0], /mira-bridge: delivery failed/);
 });
 
-test("builds a confirmation reminder for a pending approval", () => {
-  const entry = buildApprovalEntry({
-    sessionId: "session-9",
-    cwd: "/Users/yunye/MIRA",
-    time: TIME,
-    title: "真实任务",
-    toolName: "bash",
-    reason: "写入工作区之外的文件",
-    approvalId: "approval-1",
-  });
-  assert.equal(entry.status, "待确认");
-  assert.equal(entry.id, approvalEntryId("session-9", "approval-1"));
-  assert.match(entry.body, /「bash」/);
-  assert.match(entry.body, /写入工作区之外的文件/);
-  assert.equal(entry.thread, "session-9");
-  assert.equal(entry.link, "dsh://open");
-});
-
-test("builds a question reminder that counts multiple questions", () => {
-  const entry = buildQuestionEntry({
-    sessionId: "session-9",
-    cwd: "/Users/yunye/MIRA",
-    time: TIME,
-    questions: [
-      { id: "q1", question: "先做哪一块？" },
-      { id: "q2", question: "要不要现在重启？" },
-    ],
-  });
-  assert.equal(entry.status, "待补充信息");
-  assert.equal(entry.id, questionEntryId("session-9", "q1"));
-  assert.match(entry.body, /先做哪一块/);
-  assert.match(entry.body, /共 2 个问题/);
-});
-
-test("dismissal closes its target and is never shown", () => {
-  const target = approvalEntryId("session-9", "approval-1");
-  const dismissal = buildDismissal({ targetId: target, sessionId: "session-9", time: TIME });
-  assert.equal(dismissal.id, "dismiss-" + target);
-  assert.equal(dismissal.dismiss, target);
-  assert.equal(dismissal.done, true);
-});
-
-test("an approval is claimable from MIRA and closes itself", async () => {
+test("an allowed approval is delivered, answered once, and closed", async () => {
   const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
   alive(root);
-  const handlers = new Map();
-  apply(
-    { on: (event, handler, options) => handlers.set(event, { handler, options }), logger: { warn: () => {} } },
-    { dataDir: root, approvalTimeoutMs: 3000, pollMs: 10 },
-  );
-  const registration = handlers.get("approval/request");
-  assert.equal(registration.options?.prepend, true, "approval answerer runs before the desktop dialog");
-  const pending = registration.handler(
-    { agent: { session: session() }, toolName: "bash", reason: "写入工作区之外的文件" },
+  const handlers = harness(root);
+  const pending = handlers.get("approval/request")(
+    { agent: { session: session() }, toolName: "bash", reason: "需要写入" },
     async () => "unavailable",
   );
-  const entry = await waitFor(() => inboxEntries(root).find((item) => item.status === "待确认"));
-  assert.ok(entry.token, "reminder carries a one-shot token");
-  assert.ok(entry.expires > entry.date, "reminder expires with the approval window");
-  assert.match(entry.body, /bash/);
-
-  decide(root, entry.token, "allow");
+  const asked = await waitFor(() => events(root).find((item) => item.kind === "approval.asked"));
+  assert.equal(asked.approval.tool, "bash");
+  assert.equal(asked.approval.reason, "需要写入");
+  assert.ok(asked.approval.token);
+  decide(root, asked.approval.token, "allow");
   assert.equal(await pending, "allowed-once");
-  const closed = await waitFor(() => inboxEntries(root).find((item) => item.dismiss === entry.id));
-  assert.ok(closed, "answered approval is dismissed");
+  const closed = await waitFor(() => events(root).find((item) => item.kind === "approval.closed"));
+  assert.equal(closed.closes, asked.dedupeKey, "the dismissal targets the same reminder");
 });
 
-test("a denied approval returns rejected and closes the reminder", async () => {
+test("a denied approval is rejected and closed", async () => {
   const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
   alive(root);
-  const handlers = new Map();
-  apply(
-    { on: (event, handler) => handlers.set(event, handler), logger: { warn: () => {} } },
-    { dataDir: root, approvalTimeoutMs: 3000, pollMs: 10 },
-  );
+  const handlers = harness(root);
   const pending = handlers.get("approval/request")(
     { agent: { session: session() }, toolName: "bash" },
     async () => "unavailable",
   );
-  const entry = await waitFor(() => inboxEntries(root).find((item) => item.status === "待确认"));
-  decide(root, entry.token, "deny");
+  const asked = await waitFor(() => events(root).find((item) => item.kind === "approval.asked"));
+  decide(root, asked.approval.token, "deny");
   assert.equal(await pending, "rejected");
+  assert.ok(events(root).some((item) => item.kind === "approval.closed"));
 });
 
 test("deferring falls back to the desktop dialog", async () => {
   const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
   alive(root);
-  const handlers = new Map();
-  apply(
-    { on: (event, handler) => handlers.set(event, handler), logger: { warn: () => {} } },
-    { dataDir: root, approvalTimeoutMs: 3000, pollMs: 10 },
-  );
+  const handlers = harness(root, { approvalTimeoutMs: 3000 });
   let delegated = false;
   const pending = handlers.get("approval/request")(
     { agent: { session: session() }, toolName: "bash" },
@@ -373,28 +338,25 @@ test("deferring falls back to the desktop dialog", async () => {
       return "ui-answer";
     },
   );
-  const entry = await waitFor(() => inboxEntries(root).find((item) => item.status === "待确认"));
-  decide(root, entry.token, "defer");
+  const asked = await waitFor(() => events(root).find((item) => item.kind === "approval.asked"));
+  decide(root, asked.approval.token, "defer");
   assert.equal(await pending, "ui-answer");
-  assert.equal(delegated, true, "desktop answerer decides when deferred");
+  assert.equal(delegated, true, "the desktop answerer decides when deferred");
+  assert.ok(events(root).some((item) => item.kind === "approval.closed"));
 });
 
 test("an ignored approval times out to the desktop dialog", async () => {
   const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
   alive(root);
-  const handlers = new Map();
-  apply(
-    { on: (event, handler) => handlers.set(event, handler), logger: { warn: () => {} } },
-    { dataDir: root, approvalTimeoutMs: 40, pollMs: 10 },
-  );
+  const handlers = harness(root, { approvalTimeoutMs: 40 });
   const result = await handlers.get("approval/request")(
     { agent: { session: session() }, toolName: "bash" },
     async () => "ui-answer",
   );
   assert.equal(result, "ui-answer");
-  const entries = inboxEntries(root).sort((a, b) => a.date - b.date);
-  assert.ok(entries.some((item) => item.status === "待确认"), "reminder was shown during the window");
-  assert.ok(entries.some((item) => item.dismiss), "reminder is closed after timeout");
+  const delivered = events(root);
+  assert.ok(delivered.some((item) => item.kind === "approval.asked"), "the reminder was shown during the window");
+  assert.ok(delivered.some((item) => item.kind === "approval.closed"), "the reminder is closed after the timeout");
 });
 
 test("a failed delivery falls back immediately instead of holding the approval", async () => {
@@ -430,16 +392,11 @@ test("a failed delivery falls back immediately instead of holding the approval",
     globalThis.setInterval = originalSetInterval;
     chmodSync(root, 0o700);
   }
-  assert.equal(inboxCount(root), 0);
 });
 
 test("approvals are not claimed while MIRA is not running", async () => {
   const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
-  const handlers = new Map();
-  apply(
-    { on: (event, handler) => handlers.set(event, handler), logger: { warn: () => {} } },
-    { dataDir: root, approvalTimeoutMs: 40, pollMs: 10 },
-  );
+  const handlers = harness(root, { approvalTimeoutMs: 40 });
   let delegated = false;
   const result = await handlers.get("approval/request")(
     { agent: { session: session() }, toolName: "bash" },
@@ -450,366 +407,23 @@ test("approvals are not claimed while MIRA is not running", async () => {
   );
   assert.equal(result, "ui-answer");
   assert.equal(delegated, true);
-  assert.equal(inboxCount(root), 0, "no reminder when MIRA cannot answer");
+  assert.equal(events(root).length, 0, "no reminder when MIRA cannot answer");
 });
 
 test("a pending question delegates and closes itself when answered", async () => {
   const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
-  const handlers = new Map();
-  apply(
-    { on: (event, handler) => handlers.set(event, handler), logger: { warn: () => {} } },
-    { dataDir: root },
-  );
+  const handlers = harness(root);
   const answer = { answers: [{ id: "q1", selected: ["A"] }] };
   const result = await handlers.get("user-questions/request")(
     { questions: [{ id: "q1", question: "选哪个？" }], agent: { session: session() } },
     async () => answer,
   );
   assert.deepEqual(result, answer, "the desktop answerer still owns the answer");
-  const files = readdirSync(join(root, "inbox")).sort();
-  assert.equal(files.length, 2);
-  const asked = JSON.parse(readFileSync(join(root, "inbox", files[0]), "utf8"));
-  const closed = JSON.parse(readFileSync(join(root, "inbox", files[1]), "utf8"));
-  assert.equal(asked.status, "待补充信息");
-  assert.equal(closed.dismiss, asked.id);
-});
-
-test("a cancelled question still closes its reminder", async () => {
-  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
-  const handlers = new Map();
-  apply(
-    { on: (event, handler) => handlers.set(event, handler), logger: { warn: () => {} } },
-    { dataDir: root },
-  );
-  await assert.rejects(
-    handlers.get("user-questions/request")(
-      { questions: [{ id: "q1", question: "选哪个？" }], agent: { session: session() } },
-      async () => {
-        throw new Error("aborted");
-      },
-    ),
-    /aborted/,
-  );
-  const files = readdirSync(join(root, "inbox")).sort();
-  assert.equal(files.length, 2, "reminder plus dismissal");
-});
-
-test("subagent approvals are not claimed", async () => {
-  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
-  alive(root);
-  const handlers = new Map();
-  apply(
-    { on: (event, handler) => handlers.set(event, handler), logger: { warn: () => {} } },
-    { dataDir: root, approvalTimeoutMs: 40, pollMs: 10 },
-  );
-  const result = await handlers.get("approval/request")(
-    { agent: { session: session({ origin: "subagent" }) }, toolName: "bash" },
-    async () => "ui-answer",
-  );
-  assert.equal(result, "ui-answer");
-  assert.equal(inboxCount(root), 0);
-});
-
-test("reads the folded session title when the title event was missed", () => {
-  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
-  const handlers = new Map();
-  apply(
-    {
-      on: (event, handler) => handlers.set(event, handler),
-      logger: { warn: () => {} },
-      sessionTitle: { get: () => ({ title: "设计 AI 任务与提醒中心" }) },
-    },
-    { dataDir: root },
-  );
-  handlers.get("session/event")(session(), {
-    type: "turn/end",
-    time: TIME,
-    data: { turn: 2, reason: { kind: "completed" } },
-  });
-  const [file] = readdirSync(join(root, "inbox"));
-  const entry = JSON.parse(readFileSync(join(root, "inbox", file), "utf8"));
-  assert.equal(entry.title, "设计 AI 任务与提醒中心");
-});
-
-test("a failing title service still delivers with a round fallback", () => {
-  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
-  const handlers = new Map();
-  apply(
-    {
-      on: (event, handler) => handlers.set(event, handler),
-      logger: { warn: () => {} },
-      sessionTitle: { get: () => { throw new Error("not live"); } },
-    },
-    { dataDir: root },
-  );
-  handlers.get("session/event")(session(), {
-    type: "turn/end",
-    time: TIME,
-    data: { turn: 2, reason: { kind: "completed" } },
-  });
-  const [file] = readdirSync(join(root, "inbox"));
-  const entry = JSON.parse(readFileSync(join(root, "inbox", file), "utf8"));
-  assert.equal(entry.title, "MIRA · 第 2 轮");
-});
-
-test("approval reminders inherit the current round", async () => {
-  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
-  alive(root);
-  const handlers = new Map();
-  apply(
-    { on: (event, handler) => handlers.set(event, handler), logger: { warn: () => {} } },
-    { dataDir: root, approvalTimeoutMs: 40, pollMs: 10 },
-  );
-  handlers.get("session/event")(session(), { type: "turn/start", time: TIME, data: { turn: 3 } });
-  const pending = handlers.get("approval/request")(
-    { agent: { session: session() }, toolName: "bash" },
-    async () => "ui-answer",
-  );
-  const entry = await waitFor(() => inboxEntries(root).find((item) => item.status === "待确认"));
-  assert.equal(entry.title, "MIRA · 第 3 轮");
-  await pending;
-});
-
-function sessionWithEvents(events) {
-  return {
-    id: "session-1234-abcd",
-    header: { cwd: "/Users/yunye/MIRA" },
-    seq: events.length,
-    eventAt: (index) => events[index],
-  };
-}
-
-test("uses the latest user prompt as the task name when no title exists", () => {
-  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
-  const handlers = new Map();
-  apply(
-    { on: (event, handler) => handlers.set(event, handler), logger: { warn: () => {} } },
-    { dataDir: root },
-  );
-  const session = sessionWithEvents([
-    { type: "user/message", data: { source: { kind: "runtime-context" }, content: [{ type: "text", text: "Current runtime context." }] } },
-    { type: "user/message", data: { source: { kind: "user" }, content: [{ type: "text", text: "我想做一个软件，就是说如果我的 codex 任务完成了，或者需要我确定了" }] } },
-  ]);
-  handlers.get("session/event")(session, {
-    type: "turn/end",
-    time: TIME,
-    data: { turn: 1, reason: { kind: "completed" } },
-  });
-  const [file] = readdirSync(join(root, "inbox"));
-  const entry = JSON.parse(readFileSync(join(root, "inbox", file), "utf8"));
-  assert.equal(entry.title, promptTitle("我想做一个软件，就是说如果我的 codex 任务完成了，或者需要我确定了"));
-});
-
-test("synthetic context messages are not used as task names", () => {
-  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
-  const handlers = new Map();
-  apply(
-    { on: (event, handler) => handlers.set(event, handler), logger: { warn: () => {} } },
-    { dataDir: root },
-  );
-  const session = sessionWithEvents([
-    { type: "user/message", data: { source: { kind: "runtime-context" }, content: [{ type: "text", text: "Current runtime context." }] } },
-  ]);
-  handlers.get("session/event")(session, {
-    type: "turn/end",
-    time: TIME,
-    data: { turn: 2, reason: { kind: "completed" } },
-  });
-  const [file] = readdirSync(join(root, "inbox"));
-  const entry = JSON.parse(readFileSync(join(root, "inbox", file), "utf8"));
-  assert.equal(entry.title, "MIRA · 第 2 轮");
-});
-
-test("promptTitle keeps short prompts whole and uses head + tail when long", () => {
-  assert.equal(promptTitle("修复登录按钮的对比度"), "修复登录按钮的对比度");
-  assert.equal(
-    promptTitle("# 任务：把今日已完成改成下拉\n\n第二段不进入标题"),
-    "把今日已完成改成下拉",
-  );
-  const long = "这是一个非常长的提示词，前半部分描述背景和目标，后半部分给出真正的具体要求：把左下角印章删除，并且默认展开。";
-  assert.equal(promptTitle(long), "这是一个非常长的提示词，前半部分描述背景和目标，后半部分…印章删除，并且默认展开。");
-  assert.ok(Array.from(promptTitle(long)).length <= 44);
-  assert.equal(promptTitle("Fix the login button contrast issue on the settings page"), "Fix the login button…settings page");
-});
-
-test("each DSH round uses its own prompt as the title", () => {
-  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
-  const handlers = new Map();
-  apply(
-    { on: (event, handler) => handlers.set(event, handler), logger: { warn: () => {} } },
-    { dataDir: root },
-  );
-  const events = [
-    { type: "user/message", data: { source: { kind: "user" }, content: [{ type: "text", text: "设计 AI 任务与提醒中心" }] } },
-  ];
-  const session = {
-    id: "session-rounds",
-    header: { cwd: "/Users/yunye/MIRA" },
-    get seq() { return events.length; },
-    eventAt: (index) => events[index],
-  };
-  const emit = (event) => handlers.get("session/event")(session, event);
-  emit({ type: "turn/start", time: TIME, data: { turn: 1 } });
-  emit({ type: "turn/end", time: TIME + 1, data: { turn: 1, reason: { kind: "completed" } } });
-  events.push({ type: "user/message", data: { source: { kind: "user" }, content: [{ type: "text", text: "把左下角印章删掉，字体再放大一些" }] } });
-  emit({ type: "turn/start", time: TIME + 2, data: { turn: 2 } });
-  emit({ type: "turn/end", time: TIME + 3, data: { turn: 2, reason: { kind: "completed" } } });
-  const titles = inboxEntries(root).filter((entry) => entry.status === "本轮结束").map((entry) => entry.title).sort();
-  assert.deepEqual(titles, ["设计 AI 任务与提醒中心", "把左下角印章删掉，字体再放大一些"].sort());
-});
-
-test("summarize cleans prompt markup and prefers the first paragraph", () => {
-  assert.equal(
-    summarize("# 任务：对当前项目进行长期自主迭代优化\n\n你是一名资深软件架构师。"),
-    "对当前项目进行长期自主迭代优化",
-  );
-  assert.equal(
-    summarize("任务：修复登录\n第二行说明\n\n后面的段落不进入标题"),
-    "修复登录 第二行说明",
-  );
-  assert.equal(summarize("## 每周回顾"), "每周回顾");
-  assert.equal(summarize("Short task"), "Short task");
-  assert.equal(summarize(""), "");
-  assert.equal(
-    summarize("这是一个明显超过十个字符的任务说明文字", 10),
-    "这是一个明显超过十个…",
-  );
-  assert.equal(
-    summarize("Fix the login button contrast issue today", 20),
-    "Fix the login…",
-    "a Latin title cuts on a word boundary",
-  );
-});
-
-test("cleans a raw prompt heading passed as a title", () => {
-  const entry = buildEntry({
-    sessionId: "session-1234-abcd",
-    cwd: "/Users/yunye/MIRA",
-    turn: 2,
-    reason: { kind: "completed" },
-    time: TIME,
-    title: "# 任务：对当前项目进行长期",
-  });
-  assert.equal(entry.title, "对当前项目进行长期");
-});
-
-test("prefers the full prompt over a DSH fallback title", () => {
-  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
-  const handlers = new Map();
-  apply(
-    {
-      on: (event, handler) => handlers.set(event, handler),
-      logger: { warn: () => {} },
-      sessionTitle: { get: () => ({ title: "# 任务：对当前项目进行长期", source: { kind: "fallback" } }) },
-    },
-    { dataDir: root },
-  );
-  const session = sessionWithEvents([
-    {
-      type: "user/message",
-      data: {
-        source: { kind: "user" },
-        content: [{ type: "text", text: "# 任务：对当前项目进行长期自主迭代优化\n\n你是一名资深软件架构师。" }],
-      },
-    },
-  ]);
-  handlers.get("session/event")(session, {
-    type: "turn/end",
-    time: TIME,
-    data: { turn: 1, reason: { kind: "completed" } },
-  });
-  const [file] = readdirSync(join(root, "inbox"));
-  const entry = JSON.parse(readFileSync(join(root, "inbox", file), "utf8"));
-  assert.equal(entry.title, "对当前项目进行长期自主迭代优化");
-});
-
-test("prefers the round prompt over a generated session title", () => {
-  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
-  const handlers = new Map();
-  apply(
-    {
-      on: (event, handler) => handlers.set(event, handler),
-      logger: { warn: () => {} },
-      sessionTitle: { get: () => ({ title: "设计 AI 任务与提醒中心", source: { kind: "provider" } }) },
-    },
-    { dataDir: root },
-  );
-  const session = sessionWithEvents([
-    { type: "user/message", data: { source: { kind: "user" }, content: [{ type: "text", text: "请帮我重构登录页" }] } },
-  ]);
-  handlers.get("session/event")(session, {
-    type: "turn/end",
-    time: TIME,
-    data: { turn: 1, reason: { kind: "completed" } },
-  });
-  const [file] = readdirSync(join(root, "inbox"));
-  const entry = JSON.parse(readFileSync(join(root, "inbox", file), "utf8"));
-  assert.equal(entry.title, "请帮我重构登录页");
-});
-
-test("cleans a fallback title when no prompt is readable", () => {
-  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
-  const handlers = new Map();
-  apply(
-    {
-      on: (event, handler) => handlers.set(event, handler),
-      logger: { warn: () => {} },
-      sessionTitle: { get: () => ({ title: "# 任务：对当前项目进行长期", source: { kind: "fallback" } }) },
-    },
-    { dataDir: root },
-  );
-  handlers.get("session/event")(session(), {
-    type: "turn/end",
-    time: TIME,
-    data: { turn: 1, reason: { kind: "completed" } },
-  });
-  const [file] = readdirSync(join(root, "inbox"));
-  const entry = JSON.parse(readFileSync(join(root, "inbox", file), "utf8"));
-  assert.equal(entry.title, "对当前项目进行长期");
-});
-
-test("a fallback title event does not pin the truncated name", () => {
-  const root = mkdtempSync(join(tmpdir(), "mira-dsh-"));
-  const handlers = new Map();
-  apply(
-    { on: (event, handler) => handlers.set(event, handler), logger: { warn: () => {} } },
-    { dataDir: root },
-  );
-  const session = sessionWithEvents([
-    {
-      type: "user/message",
-      data: {
-        source: { kind: "user" },
-        content: [{ type: "text", text: "# 任务：对当前项目进行长期自主迭代优化\n\n你是一名资深软件架构师。" }],
-      },
-    },
-  ]);
-  handlers.get("session/event")(session, {
-    type: "session/title",
-    time: TIME,
-    data: { title: "# 任务：对当前项目进行长期", source: { kind: "fallback" } },
-  });
-  handlers.get("session/event")(session, {
-    type: "turn/end",
-    time: TIME,
-    data: { turn: 1, reason: { kind: "completed" } },
-  });
-  const first = JSON.parse(readFileSync(join(root, "inbox", readdirSync(join(root, "inbox"))[0]), "utf8"));
-  assert.equal(first.title, "对当前项目进行长期自主迭代优化");
-
-  handlers.get("session/event")(session, {
-    type: "session/title",
-    time: TIME,
-    data: { title: "长期迭代优化任务", source: { kind: "provider" } },
-  });
-  handlers.get("session/event")(session, {
-    type: "turn/end",
-    time: TIME,
-    data: { turn: 2, reason: { kind: "completed" } },
-  });
-  const titles = readdirSync(join(root, "inbox"))
-    .sort()
-    .map((file) => JSON.parse(readFileSync(join(root, "inbox", file), "utf8")).title);
-  assert.ok(!titles.includes("长期迭代优化任务"), "session titles never replace the current prompt");
-  assert.ok(titles.every((title) => title === "对当前项目进行长期自主迭代优化"));
+  const delivered = events(root);
+  const asked = delivered.find((item) => item.kind === "question.asked");
+  assert.ok(asked, "the question is observed");
+  assert.equal(asked.questions[0].question, "选哪个？");
+  const closed = delivered.find((item) => item.kind === "question.closed");
+  assert.ok(closed, "the reminder closes after the answer");
+  assert.equal(closed.closes, asked.dedupeKey);
 });

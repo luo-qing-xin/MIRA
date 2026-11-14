@@ -17,6 +17,10 @@ MIRA · AI Task Hub 0.2：macOS 菜单栏 AI 任务提醒中心。本地优先�
 | 7 | 历史与去重 | 事件按 id 去重；同会话新事件把旧提醒标为已处理；超过 24 小时的事件直接归档 |
 | 8 | 设置 | Codex 连接配置/更新、DSH 连接配置/移除、通知授权、登录启动、测试弹窗、打开数据目录 |
 | 9 | 运行方式 | 菜单栏常驻（LSUIElement），单实例；`state.json` 原子写；关闭窗口不退出 |
+| 10 | 连接版本自检 | 适配器写入 `ADAPTER_VERSION`；设置页区分旧版 / 需更新 / 需重启 / 已最新，读取安装文件文本而不执行 |
+| 11 | 记录保留 | 90 天与 500 条上限；先按月份导出 `records-YYYY-MM.md` 再裁剪；待处理项永不自动清理 |
+| 12 | 适配器契约 | `mira.adapter/1` 事件 + Python/Node SDK；MIRA 单一接收方负责标题、去重、链接与审批关闭；旧格式兼容 |
+| 13 | 网页监控（通用） | 任意 http/https 页面：内置浏览器登录，自动识别重复列表或整页指纹；新条目进任务库并提醒，不按学校写死 |
 
 ## 1. 基线（2026-11-11 12:47）
 
@@ -67,7 +71,9 @@ MIRA · AI Task Hub 0.2：macOS 菜单栏 AI 任务提醒中心。本地优先�
 | Q29 | P3 | 通知权限/hooks/DSH 状态只在启动或应用内操作后刷新；撤销权限后继续发系统通知且无应用内兜底，外部安装后状态陈旧 | 应用激活时重读三项状态 | ✅ R15 |
 | Q30 | P2 | DSH 常用确定性 `fallback` 标题（首条消息按字节截断，保留 `#`/「任务：」）；MIRA 原样使用，截图显示为「# 任务：对当前项目进行长期」 | fallback 时优先首条消息首段；清理标题标记；Swift 展示层兼容旧记录 | ✅ R16 |
 | — | 跳过 | 桌面计划改到更晚时间时，当天提醒先记为已过期、到新时间再恢复 | 既有 `ScheduledTasksTests` 明确断言该行为，属产品取舍，不擅自改动 | 记录 |
-| — | 跳过 | 历史/`seen` 无限增长 | 涉及数据保留语义，需产品决定 | 记录 |
+| Q31 | P1 | 历史记录、`seen`、`titles/`、`inbox/rejected/` 只增不减；README 自述「无无限增长清理策略」 | 90 天 / 500 条保留，先导出 `records-YYYY-MM.md` 再裁剪；缓存按 7/30 天清理 | ✅ R20 |
+| Q32 | P2 | 已安装的接收器与插件没有版本标记，更新后无法区分「没更新文件」和「没重启客户端」 | 适配器写 `ADAPTER_VERSION`；设置页按 missing/legacy/outdated/ahead/waiting/restart/ready 显示 | ✅ R21 |
+| Q33 | P1 | 每个接入方各写一套「规范化 + 标题 + 去重 + 审批回执」，再接第三个工具（Claude Code / Cursor / Gemini CLI）成本翻倍 | 抽出 `mira.adapter/1` 事件契约 + 两个 30 行 SDK；Swift 成为唯一接收方，旧格式仍兼容 | ✅ R22 |
 | — | 跳过 | DSH 会话标题在标题生成前回退为短标识 | 已文档化，改动收益低 | 记录 |
 
 ## 3. 迭代记录
@@ -348,3 +354,85 @@ swiftc -module-cache-path /tmp/mira-swift-cache Sources/Core.swift Sources/Sched
 - DSH：`turn/start` 现在写入一条 `运行中` 条目，不触发通知；同一轮 `turn/end` 到达后，MIRA 按既有同会话规则关闭它。Codex 的 `UserPromptSubmit` 原本就会产生运行中条目，无需新逻辑。
 - 验证：Node 38 项、Python 20 项、`scripts/build.sh` 通过；应用重启为 PID 6117。
 - 生效条件：DSH 的运行中状态需要点设置里的「更新 DSH 连接」并重启 DSH；Codex 侧无需更新即可看到。
+
+## 11. 记录保留与按月归档（R20，2026-11-11 22:45）
+
+- 触发：用户选定「数据保留策略」这一项；此前日志与 README 都记着「历史与 `seen` 无限增长、历史页全量渲染」未做。
+- 规则：已处理或已过期且超过 90 天的记录进入归档；再叠加 500 条上限，从最旧的已结项记录开始裁剪。待确认、待补充信息、待完成等仍需用户处理的事项永不清理；`运行中` 超过 2 天视为客户端崩溃遗留，可以结项。
+- 导出：先按记录发生月份写入 `records-YYYY-MM.md`，再次整理时用已写入的表格行做幂等判断，重复行直接跳过；只有写文件成功后才从内存状态删除，`tick` 的保存失败回滚路径保持不变。
+- 去重：`seen` 与新记录集合取交集，随记录一起收敛。被归档事件若再次投递会重新落一条记录；收件箱文件在消费后即删除，不会重投，属已文档化的本地边界。
+- 缓存：`titles/` 保留 7 天、`inbox/rejected/` 保留 30 天，与整理同批清理，删除失败不阻塞提醒主流程。
+- 入口：启动与每天首次 `tick` 自动执行，且排在 `Notify.due` 之前，保证通知索引始终指向裁剪后的数组；设置页「记录与存储」显示条数并可「立即整理」。
+- 验证：Swift 用例覆盖 90 天阈值、500 条上限、待处理保护、2 天运行中结项、`seen` 收敛、按月分组、竖线/换行转义、重复导出零重复；Python 23 项、Node 40 项、三套 Swift 断言与 `scripts/build.sh` 全部通过。
+
+## 12. 适配器版本握手（R21，2026-11-11 22:52）
+
+- 触发：用户指出每次更新桥接都要手动点两次并重启 DSH，而且点完也看不出装的是不是新版本（R16/R18 的遗留体验问题）。
+- 协议：Codex `receive.py` 与 DSH `entry.js` 各声明 `ADAPTER_VERSION = '0.3.0'`，写进每个可见事件的 `adapterVersion` 字段；Swift 侧 `IntegrationVersion.current` 是应用期望值，测试跨语言比对三处常量，防止版本漂移。
+- 判定：`AdapterHealth` 是纯函数，给出 missing / legacy（文件无标记）/ outdated / ahead / waiting / restart / ready 七种状态。「文件已更新但客户端还没重启」表现为 `restart`：最近一条事件不是当前版本。
+- 展示：设置页两张连接卡直接显示状态文案与颜色；旧版本提示「点更新」，更新后提示「重启后生效」，收到新版本事件后显示最近事件时间。读取安装文件只是文本扫描，不执行插件。
+- 兼容：`Entry.adapterVersion` 是可选字段，旧 `state.json` 与旧收件箱事件照常解码；旧安装没有标记时显示「旧版」，不猜版本号。
+- 验证：Node 40 项（新增版本写入与跨文件常量比对）、Python 23 项（新增版本写入与安装脚本刷新文件）、Swift 三套断言、`scripts/build.sh`（`minos 13.0`、ad-hoc 签名）全部通过。
+- 仍需用户操作：本机 `~/.dsh/profiles/desktop/plugins/mira-bridge/` 与 `~/Library/Application Support/MIRA/receive.py` 仍是旧文件（沙箱不写工作区外）。在 MIRA 设置页点「更新连接配置」和「更新 DSH 连接」后重启 DSH，卡片才会从「旧版」变为「插件 0.3.0」。
+
+## 13. 适配器契约与单一接收方（R22，2026-11-11 23:55）
+
+- 触发：用户要求把适配器抽象成契约 + SDK，避免接入第三个工具时复制一套规范化、标题、去重和审批逻辑。
+- 契约：`mira.adapter/1`，字段、kind 与示例见 `integrations/contract/adapter-event.md`。适配器只映射 `adapter/kind/session/turn/cwd/hint/reason/link/dedupeKey/approval/questions`。
+- SDK：`integrations/emit/mira_emit.py` 与 `integrations/emit/emit.js` 负责 protocol/version/时间戳、首段提示词 ≤160 字符、原子写 0700/0600。两个实现由 `tests/test_contract_parity.py` 逐字段比对，避免各自漂移。
+- 单一接收方：`Sources/AdapterContract.swift` 定义事件解码、标题清洗与 44 字裁切、状态/正文文案、来源、去重 id、审批 token/过期、`*.closed` 静默关闭；`Inbox.drain` 增加契约分支，并把链接白名单、同会话合并、24 小时静默抽成共享的 `accept`。旧版完整 Entry JSON 继续可读，混装期间不丢事件。
+- 标题缓存：`TitleStore` 写入数据目录 `title-cache.json`（0600、24 小时、按 adapter+session+turn 匹配），取代每个适配器各自维护的 `titles/`；旧目录只做 7 天清理。
+- 版本：`IntegrationVersion.current` 升到 `0.4.0`；设置页探测已安装 SDK 文件（`emit.js` / `mira_emit.py`）而不是适配器文件。
+- 适配器瘦身：Codex `receive.py` 只做 hook → 契约映射（保留只读 SQLite 名称回退）；DSH `entry.js` 只做 session → 契约映射，`index.js` 保留心跳、审批等待与决定轮询，投递统一走 emit.js。
+- 测试：Python 24 项（含跨语言一致性、hook 进程全程 `{}`）、Node 22 项（emitter 权限、契约映射、审批 allow/deny/defer/timeout、投递失败回落）、三套 Swift 断言（标题算法、七种状态、契约→提醒、忽略未知 kind、关闭事件、标题缓存持久化）、`scripts/build.sh` 全部通过。
+- 真实端到端：分别用真实 Codex hook 与 DSH 映射向 `/tmp` 收件箱投递，再由 Swift `Inbox.drain` 读取：Codex 得到「运行中 → 本轮结束」并复用同一提示词标题；DSH 得到「任务失败」+「待确认（token）」，并被 `approval.closed` 正确关闭、`dismissed` 回报给界面。
+- 迁移：本机仍装旧文件（无 SDK 标记），设置页按预期显示「旧版」；用户点「更新连接配置」「更新 DSH 连接」后写入 0.4.0 的 emit.js/mira_emit.py，重启 DSH 或新开 Codex 会话后切到契约格式。
+
+## 14. UniCourse 课程更新接入（R23，2026-11-13 00:30）
+
+- 触发：用户要求把 `unicourse.ruc.edu.cn` 首页「新鲜事」接进 MIRA：新作业进入待办或直接弹通知。
+- 发现：站点需要 CAS 登录（未登录访问 `/index/home/index.html` 会 302 到 `/index/index/index.html`）；新鲜事是自然语言句子，没有可直接调用的公开 API；MIRA 此前没有网络代码，提醒链接白名单也只认 ChatGPT / Codex / DSH。
+- 方案：不做浏览器扩展、不存密码。MIRA 内嵌 WKWebView 走学校登录，登录成功时只取 `.ruc.edu.cn` 的会话 Cookie（写 `unicourse.json`，0600）；URLSession 按 15/30/60/120 分钟（默认 30）带 Cookie 抓首页；文本规则解析「某人 在 某课程 动作：标题」，按「课程 + 发布人 + 动作 + 标题」的 FNV-1a 去重；作业写入任务库「课程」并生成一条「新作业」记录，公告按开关生成「课程公告」，课件和讨论不提醒。
+- 边界：首次连接只建立基线，不倒灌历史；另给「导入当前列表」；服务端轮换 Set-Cookie 时并回存储值；解析失败写 `unicourse-diagnostic.html`（页面片段、不含 Cookie）；网络失败只更新状态，不动已有任务。
+- 改动：新增 `Sources/UniCourse.swift`（解析/抓取/配置）、`Sources/UniCourseLogin.swift`（登录窗口）、`tests/UniCourseTests.swift`；`Hub` 增加抓取状态与任务/记录落地；`Entry.courseUpdate` 让课程更新只提醒一次、不占「待处理」也不混进「今日已完成」；`Links.valid` 放行 `unicourse.ruc.edu.cn`；`scripts/build.sh` 链接 WebKit。
+- 验证：Swift 四套断言（UniCourse 7 条截图同构夹具、合并行、实体、链接优先级、配置 0600 往返）、Python 44 项、Node 22 项、`scripts/build.sh` 无警告；真实网络下无效 Cookie 被正确判定为登录过期，而不是把登录页当课程页。
+- 风险：真实登录后的页面若是 JS 渲染，解析会为空，需要按诊断片段调整规则；首页列表没有截止时间，导入的任务不带 due；Cookie 过期需要手动重新登录（状态会明确提示）。
+- 仍需用户操作：重启 `dist/MIRA.app` 加载新构建，在设置页登录 UniCourse，确认首次基线 / 「导入当前列表」的结果；若状态显示「检查失败 · 页面已打开，但没有解析到课程更新」，把数据目录的 `unicourse-diagnostic.html` 提供给下一轮校准。
+
+## 15. UniCourse 改为按课程同步未提交作业（R24，2026-11-13 09:30）
+
+- 触发：用户贴出课程作业页，要求「直接把未提交的作业加入任务库」——首页「新鲜事」既不含提交状态，也不含截止时间。
+- 证据：登录态抓取首页发现新鲜事由 `$http.post('/index/home/morenews.html')` 渲染（所以 R23 的 HTML 解析为空，诊断文件就是首页壳）；作业页 `/index/homework/index/cno/<cno>.html` 是服务端渲染，每个 `.panel` 带 `id="panel-N"`、`id="hno-N"`、`hw-check unfinished|finished`、`hide deadline`；首页 `courseitem` 的 `data-id` 是课程 `cno`。
+- 方案：从首页取课程，逐门课读作业页；只把未提交作业写成任务（`due` 取作业页截止时间，链接带 `#panel-N`），`TaskItem.externalKey = unicourse:<cno>:<hno>` 做去重；网页提交后自动把对应任务标成已完成。首次同步导入当前未提交作业且不逐条通知，之后新增才提醒；公告改读 `morenews` JSON。
+- 兼容：`externalKey` 可选，旧状态解码为 nil；旧版本导入的同名任务会被认领；「导入当前列表」按钮和基线概念移除（每次同步自然对齐）。
+- 真实验证：7 门课、44 个作业块、3 个未提交；重启应用后首次同步写入 3 个任务，截止时间正确且重复同步不重复；课程名本身带《》时标题不再叠加书名号。`morenews` 当前只有作业/课件事件，公告 0 条。
+- 风险：作业页若改为前端渲染需重新校准；任务标题随课程名/作业名同步，教师改名会覆盖本地标题；不读附件与课程详情。
+
+## 16. 学习通作业接入（R25，2026-11-13 09:40）
+
+- 触发：用户要求把 `i.chaoxing.com` 的学习通作业也接入任务库，规则同 UniCourse：只收未提交/待做。
+- 调研：学习通的作业列表不在 `i.chaoxing.com/base`，而是在课程级 H5 页。参考公开的 `flutter_chaoxing` 客户端实现（反编译 7.0.2）：课程/班级用 `mooc1-api.chaoxing.com/mycourse/backclazzdata?view=json&getTchClazzType=1`；作业/考试用 `/phone/moocAnalysis/workList|examList?courseId&classId` 的服务端 HTML；`gas/taskmsg` 原生 JSON 有 WAF/签名，未采用。
+- 方案：通用登录窗口（UniCourse 共用）只取 `.chaoxing.com` 会话 Cookie；`dt/tr` 行按 `status` 判定（1=未交、2=已过期未交、3=待批阅、4=已完成），只导入未交；已完成不进任务库、同步时移除，已过期未交保留并标注；`workId/examId` 做稳定键，缺失时哈希兜底；首次同步导入全部待做、之后新增才提醒。
+- 验证：五套 Swift 断言（课程两种 JSON 结构、作业/考试行、截止时间、状态、键稳定性、链接白名单、0600 配置）、Python 44 项、Node 22 项、`scripts/build.sh` 无警告；未登录请求返回 200 + `{"result":0,"msg":"请重新登录"}` 的情况已正确判定为会话过期。
+- 风险：H5 列表结构/字段可能随版本变化；列表里没有截止时间的作业会以「未设置」进入任务库；首门课的原始 HTML 会在首次同步后存为 `chaoxing-worklist-sample.html`（0600）用于校准。
+- 仍需用户操作：在设置页完成一次学习通登录并同步；若状态显示 0 个待做但确实有作业，把样本页交给下一轮校准。
+
+## 17. 666 教学系统考试接入（R27，2026-11-13 10:45）
+
+- 触发：用户要求把 `666.ruc.edu.cn/exam/my` 的作业/考试也接进任务库。
+- 调研：666 是 Next.js App Router + Auth.js（credentials 登录）。未登录访问任何页面都返回 404 壳；数据由 `listMyCourses` / `listMyExam` 两个 Server Action 以 RSC flight 返回。页面组件用 `examName`、`startedAt`、`endedAt`、`course.courseName` 渲染，`endedAt` 决定是否已结束。
+- 方案：通用登录窗口登录 `/user/login`，只取 `.ruc.edu.cn` Cookie；直接 POST 两个 action（`Next-Action` 头 + JSON body），解析 `id:payload` 行中的 JSON，逐门课取考试；只导入未结束的考试，带结束时间与 `/exam/my/<id>`；已结束的同步时移除。会话过期通过 `/api/auth/session` 判断。
+- 验证：flight 多行/纯 JSON/毫秒时间戳/结束判定/链接白名单/0600 配置的 Swift 断言全部通过；未登录时 action 返回 `1:[]` 且 session 为 null，连接器判定为登录过期；构建无警告。
+- 风险：action id 是当前部署的构建产物，666 升级后可能变化；解析依赖 flight 的 JSON 行格式。首次同步会留 `teaching-sample.txt` 便于校准。
+- 仍需用户操作：在设置页登录 666（独立账号）并同步；若解析为空，按样本校准字段。
+
+
+## 18. 通用网页监控（R28，2026-11-13 11:00）
+
+- 触发：用户提出「我给一个网址，软件自动帮我监控」，希望从 RUC 三个写死适配器扩展到北大、清华等任意学校的作业系统。
+- 判断：不为每所学校写接口；把「打开页面、登录、识别列表」做成通用流程。登录用 WKWebView 由用户完成，MIRA 不碰密码；识别用本地 DOM 启发式（重复子项、链接、日期、关键词、结构签名），不调用模型、不上传正文；识别不准时退回整页指纹。
+- 实现：新增 `Sources/WebWatch.swift`（模型/存储/日期/去重/检测脚本）、`WebWatchBrowser.swift`（无窗口 WKWebView 抓取 + 编辑器可见浏览器）、`WebWatchHub.swift`（调度、任务与提醒落地）、`WebWatchView.swift`（监控页与编辑器）；顶部导航增加「监控」，设置页增加入口。
+- 数据：监控配置独立为 `web-watches.json`（0600），只存 URL、选择器、结构签名、已见键和整页指纹，不存 Cookie/密码/正文；任务使用 `externalKey = webwatch:<id>:<hash>`，提醒使用稳定 id，`Entry.allowWebLink` 让用户自己选中的页面链接可以打开，AI 事件的白名单不变。
+- 识别细节：候选评分偏向「多个链接 + 多个日期 + 作业/考试/截止/未提交等词 + 子项同构」；排除 nav/header/footer 和纯导航；最多 6 个候选，编辑器自动选第一个；新监控在页面加载后自动扫描一次；保存后先试 CSS 路径，再按标签/类名/子项签名兜底；日期支持中文、短日期和带时区 ISO，锚点与 SPA 的路由 hash 保留在去重键里。
+- 验证：WebWatch 单测（日期/状态/去重/JSON/地址/提醒身份/0600）、真实 DOM 夹具（作业卡片、表格、无链接 onclick、600ms 客户端渲染 SPA、登录页、无列表）、RUC/PKU/THU 公开首页的真实 HTML 候选、隔离数据目录的 UI 截图、`scripts/build.sh` 与七套 Swift / Python 44 / Node 22 回归。
+- 风险与限制：不处理 iframe/Shadow DOM/Canvas；自动识别至少 3 个重复子项；需要「加载更多」或切标签的页面要把 URL 指到列表页；CSS 大改后要重扫；整页模式会受时钟/广告噪声影响。三校登录后的作业系统尚未用真实账号验收。
