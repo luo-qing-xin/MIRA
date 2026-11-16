@@ -51,16 +51,19 @@ let plum = Color(red: 0.431, green: 0.247, blue: 0.333) // #6E3F55
     @Published var unicourse = UniCourseSettings()
     @Published var uniStatus = "未登录"
     @Published var uniBusy = false
+    var uniSession = UUID()
     @Published var showUniLogin = false
     var lastUniCheck = Date.distantPast
     @Published var chaoxing = ChaoxingSettings()
     @Published var cxStatus = "未登录"
     @Published var cxBusy = false
+    var cxSession = UUID()
     @Published var showCXLogin = false
     var lastCXCheck = Date.distantPast
     @Published var teaching = TeachingSettings()
     @Published var teachStatus = "未登录"
     @Published var teachBusy = false
+    var teachSession = UUID()
     @Published var showTeachLogin = false
     var lastTeachCheck = Date.distantPast
     @Published var webWatches: [WebWatch] = []
@@ -114,8 +117,8 @@ let plum = Color(red: 0.431, green: 0.247, blue: 0.333) // #6E3F55
     var stateDidChange: (() -> Void)?
     var file: URL { root.appendingPathComponent("state.json") }
     var titlesFile: URL { root.appendingPathComponent("title-cache.json") }
-    init() {
-        root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/MIRA")
+    init(root storageRoot: URL? = nil) {
+        self.root = storageRoot ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/MIRA")
         encoder.dateEncodingStrategy = .secondsSince1970
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         decoder.dateDecodingStrategy = .secondsSince1970
@@ -248,6 +251,8 @@ let plum = Color(red: 0.431, green: 0.247, blue: 0.333) // #6E3F55
             error = "没有取得登录凭据，请重新登录。"
             return
         }
+        uniSession = UUID()
+        uniBusy = false
         let firstTime = !unicourse.signedIn
         unicourse.cookie = trimmed
         unicourse.enabled = true
@@ -264,6 +269,8 @@ let plum = Color(red: 0.431, green: 0.247, blue: 0.333) // #6E3F55
     }
 
     func disconnectUniCourse() {
+        uniSession = UUID()
+        uniBusy = false
         unicourse = UniCourseSettings()
         lastUniCheck = .distantPast
         uniStatus = "未登录"
@@ -280,19 +287,22 @@ let plum = Color(red: 0.431, green: 0.247, blue: 0.333) // #6E3F55
         guard unicourse.signedIn, !uniBusy else { return }
         // 关掉自动检查后，「立即检查」仍然可以手动触发一次。
         if !force, !unicourse.enabled { return }
-        if !force, Date().timeIntervalSince(lastUniCheck) < unicourse.interval { return }
+        if !force, !SyncInterval.isDue(lastCheck: lastUniCheck, retryAt: unicourse.retryAt, interval: unicourse.interval) { return }
         uniBusy = true
         lastUniCheck = Date()
         uniStatus = "正在同步 UniCourse…"
+        let session = uniSession
         let cookie = unicourse.cookie
         // 公告即使关闭提醒也照常取一次，避免打开开关后把旧公告当成新的补发。
         Task { [weak self] in
             let outcome = await UniCourseConnection.sync(cookie: cookie, includeNews: true)
-            self?.apply(outcome)
+            self?.apply(outcome, session: session)
         }
     }
 
-    private func apply(_ outcome: UniCourseConnection.Outcome) {
+    func apply(_ outcome: UniCourseConnection.Outcome, session: UUID) {
+        // A request from an earlier login must never restore cookies or tasks.
+        guard session == uniSession else { return }
         uniBusy = false
         unicourse.lastCheck = outcome.checkedAt
         // 页面轮换过会话 Cookie 时先写回，避免下一次带着作废的旧值。
@@ -461,6 +471,8 @@ let plum = Color(red: 0.431, green: 0.247, blue: 0.333) // #6E3F55
             error = "没有取得学习通登录凭据，请重试。"
             return
         }
+        cxSession = UUID()
+        cxBusy = false
         let firstTime = !chaoxing.signedIn
         chaoxing.cookie = trimmed
         chaoxing.enabled = true
@@ -476,6 +488,8 @@ let plum = Color(red: 0.431, green: 0.247, blue: 0.333) // #6E3F55
     }
 
     func disconnectChaoxing() {
+        cxSession = UUID()
+        cxBusy = false
         chaoxing = ChaoxingSettings()
         lastCXCheck = .distantPast
         cxStatus = "未登录"
@@ -491,23 +505,22 @@ let plum = Color(red: 0.431, green: 0.247, blue: 0.333) // #6E3F55
     func checkChaoxing(force: Bool = false) {
         guard chaoxing.signedIn, !cxBusy else { return }
         if !force, !chaoxing.enabled { return }
-        if !force, let retry = chaoxing.retryAt {
-            if Date() < retry { return }
-        } else if !force, Date().timeIntervalSince(lastCXCheck) < chaoxing.interval {
-            return
-        }
+        if !force, !SyncInterval.isDue(lastCheck: lastCXCheck, retryAt: chaoxing.retryAt, interval: chaoxing.interval) { return }
         cxBusy = true
         lastCXCheck = Date()
         cxStatus = "正在同步 学习通…"
+        let session = cxSession
         let cookie = chaoxing.cookie
         let exams = chaoxing.includeExams
         Task { [weak self] in
             let outcome = await ChaoxingConnection.sync(cookie: cookie, includeExams: exams)
-            self?.applyChaoxing(outcome)
+            self?.applyChaoxing(outcome, session: session)
         }
     }
 
-    private func applyChaoxing(_ outcome: ChaoxingConnection.Outcome) {
+    func applyChaoxing(_ outcome: ChaoxingConnection.Outcome, session: UUID) {
+        // A request from an earlier login must never restore cookies or tasks.
+        guard session == cxSession else { return }
         cxBusy = false
         chaoxing.lastCheck = outcome.checkedAt
         if let refreshed = outcome.updatedCookie { chaoxing.cookie = refreshed }
@@ -663,6 +676,8 @@ let plum = Color(red: 0.431, green: 0.247, blue: 0.333) // #6E3F55
             error = "没有取得教学系统登录凭据，请重试。"
             return
         }
+        teachSession = UUID()
+        teachBusy = false
         let firstTime = !teaching.signedIn
         teaching.cookie = trimmed
         teaching.enabled = true
@@ -678,6 +693,8 @@ let plum = Color(red: 0.431, green: 0.247, blue: 0.333) // #6E3F55
     }
 
     func disconnectTeaching() {
+        teachSession = UUID()
+        teachBusy = false
         teaching = TeachingSettings()
         lastTeachCheck = .distantPast
         teachStatus = "未登录"
@@ -693,22 +710,21 @@ let plum = Color(red: 0.431, green: 0.247, blue: 0.333) // #6E3F55
     func checkTeaching(force: Bool = false) {
         guard teaching.signedIn, !teachBusy else { return }
         if !force, !teaching.enabled { return }
-        if !force, let retry = teaching.retryAt {
-            if Date() < retry { return }
-        } else if !force, Date().timeIntervalSince(lastTeachCheck) < teaching.interval {
-            return
-        }
+        if !force, !SyncInterval.isDue(lastCheck: lastTeachCheck, retryAt: teaching.retryAt, interval: teaching.interval) { return }
         teachBusy = true
         lastTeachCheck = Date()
         teachStatus = "正在同步 教学系统…"
+        let session = teachSession
         let cookie = teaching.cookie
         Task { [weak self] in
             let outcome = await TeachingConnection.sync(cookie: cookie)
-            self?.applyTeaching(outcome)
+            self?.applyTeaching(outcome, session: session)
         }
     }
 
-    private func applyTeaching(_ outcome: TeachingConnection.Outcome) {
+    func applyTeaching(_ outcome: TeachingConnection.Outcome, session: UUID) {
+        // A request from an earlier login must never restore cookies or tasks.
+        guard session == teachSession else { return }
         teachBusy = false
         teaching.lastCheck = outcome.checkedAt
         if let refreshed = outcome.updatedCookie { teaching.cookie = refreshed }
@@ -874,13 +890,13 @@ let plum = Color(red: 0.431, green: 0.247, blue: 0.333) // #6E3F55
         let now = Date()
         if now.timeIntervalSince(lastScheduleSync) >= 30 { syncSchedules() }
         // 本轮抓取按自身间隔计时：tick 每 3 秒一次，但不会每 3 秒请求一次课程页。
-        if unicourse.enabled, unicourse.signedIn, now.timeIntervalSince(lastUniCheck) >= unicourse.interval {
+        if unicourse.enabled, unicourse.signedIn, SyncInterval.isDue(lastCheck: lastUniCheck, retryAt: unicourse.retryAt, interval: unicourse.interval, now: now) {
             checkUniCourse()
         }
-        if chaoxing.enabled, chaoxing.signedIn, now.timeIntervalSince(lastCXCheck) >= chaoxing.interval {
+        if chaoxing.enabled, chaoxing.signedIn, SyncInterval.isDue(lastCheck: lastCXCheck, retryAt: chaoxing.retryAt, interval: chaoxing.interval, now: now) {
             checkChaoxing()
         }
-        if teaching.enabled, teaching.signedIn, now.timeIntervalSince(lastTeachCheck) >= teaching.interval {
+        if teaching.enabled, teaching.signedIn, SyncInterval.isDue(lastCheck: lastTeachCheck, retryAt: teaching.retryAt, interval: teaching.interval, now: now) {
             checkTeaching()
         }
         checkDueWebWatches(now: now)
@@ -966,9 +982,22 @@ let plum = Color(red: 0.431, green: 0.247, blue: 0.333) // #6E3F55
         content.body = e.body.isEmpty ? e.status : String(e.body.prefix(160))
         content.sound = .default
         content.userInfo = ["entryId": e.id]
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: e.id, content: content, trigger: nil)) { _ in }
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: e.id, content: content, trigger: nil)) { [weak self] failure in
+            guard let failure else { return }
+            let message = failure.localizedDescription
+            Task { @MainActor in self?.notificationFailed(e, message: message) }
+        }
         if popup && notificationStatus != "已允许" { showPopup?(e) }
     }
+    func notificationFailed(_ entry: Entry, message: String) {
+        error = "系统通知发送失败，已改用应用内提醒：\(message)"
+        // The asynchronous callback may arrive after completion or snoozing.
+        if entry.source == "测试" { showPopup?(entry); return }
+        guard let current = data.entries.first(where: { $0.id == entry.id }),
+              Schedule.active(current, now: Date()), current.snooze.map({ $0 > Date() }) != true else { return }
+        showPopup?(current)
+    }
+
     func test() {
         let entry = Entry(id: UUID().uuidString, title: "通知通道测试", body: "这是一条测试通知，真实任务连接状态请查看「连接与设置」。", source: "测试", status: "测试", link: "", date: Date(), expires: Date().addingTimeInterval(600))
         notify(entry)
@@ -1289,7 +1318,10 @@ let plum = Color(red: 0.431, green: 0.247, blue: 0.333) // #6E3F55
         Task { @MainActor in if let e = self.hub.data.entries.first(where: { $0.id == id }) { self.hub.open(e) } else { self.showWindow() }; completion() }
     }
 }
+#if !MIRA_TESTING
 @main struct MiraApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     var body: some Scene { Settings { EmptyView() } }
 }
+
+#endif

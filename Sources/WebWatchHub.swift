@@ -128,9 +128,8 @@ extension Hub {
         guard webWatchBusyID == nil else { return }
         guard let watch = webWatches.first(where: { candidate in
             guard candidate.enabled else { return false }
-            if let retry = candidate.retryAt, retry > now { return false }
-            guard let last = candidate.lastCheck else { return true }
-            return now.timeIntervalSince(last) >= candidate.interval
+            return SyncInterval.isDue(lastCheck: candidate.lastCheck, retryAt: candidate.retryAt,
+                                      interval: candidate.interval, now: now)
         }) else { return }
         checkWebWatch(watch.id)
     }
@@ -141,8 +140,8 @@ extension Hub {
         let watch = webWatches[index]
         if !force {
             guard watch.enabled else { return }
-            if let retry = watch.retryAt, retry > Date() { return }
-            if let last = watch.lastCheck, Date().timeIntervalSince(last) < watch.interval { return }
+            guard SyncInterval.isDue(lastCheck: watch.lastCheck, retryAt: watch.retryAt,
+                                     interval: watch.interval) else { return }
         }
         webWatchBusyID = id
         Task { [weak self] in

@@ -2,6 +2,13 @@ import Foundation
 
 /// 课程来源的抓取间隔。两个连接器共用同一组档位，避免设置页出现两套不同的时间。
 enum SyncInterval {
+    /// A scheduled retry replaces the normal interval, including longer backoffs.
+    static func isDue(lastCheck: Date?, retryAt: Date?, interval: TimeInterval, now: Date = Date()) -> Bool {
+        if let retryAt { return now >= retryAt }
+        guard let lastCheck else { return true }
+        return now.timeIntervalSince(lastCheck) >= interval
+    }
+
     static let choices = [30, 60, 120, 720, 1440, 10080]
     static let defaultMinutes = 30
 

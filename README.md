@@ -177,6 +177,9 @@ swiftc -module-cache-path /tmp/mira-swift-cache Sources/Core.swift Sources/TaskC
 /tmp/mira-teach-tests
 swiftc -module-cache-path /tmp/mira-swift-cache Sources/Core.swift Sources/TaskCore.swift Sources/AdapterContract.swift Sources/SyncInterval.swift Sources/WebWatch.swift tests/WebWatchTests.swift -o /tmp/mira-webwatch-tests
 /tmp/mira-webwatch-tests
+swiftc -target "$(uname -m)-apple-macos13.0" -D MIRA_TESTING -parse-as-library -module-cache-path /tmp/mira-swift-cache Sources/*.swift tests/HubReliabilityTests.swift -o /tmp/mira-hub-tests
+/tmp/mira-hub-tests
+node --test tests/test_webwatch_script.mjs
 open dist/MIRA.app
 ```
 
