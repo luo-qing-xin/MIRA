@@ -300,6 +300,26 @@ import Foundation
         assert(rebooted.tasks.count == queryData.tasks.count)
         assert(rebooted.taskCategories.count == queryData.taskCategories.count)
 
+        // MARK: Today's agenda follows the same pinned task through completion
+        var agenda = HubData()
+        let first = TaskLibrary.add(&agenda, title: "无截止日期", now: t0)!
+        var second = TaskLibrary.add(&agenda, title: "未来截止日期", now: t0)!
+        second.due = at(20)
+        assert(TaskLibrary.update(&agenda, task: second, now: t0))
+        let archivedTask = TaskLibrary.add(&agenda, title: "已归档", now: t0)!
+        _ = TaskLibrary.add(&agenda, title: "未置顶", now: t0)!
+        assert(TaskLibrary.pinnedForToday(agenda.tasks, now: t0, calendar: calendar).isEmpty)
+        assert(TaskLibrary.togglePin(&agenda, id: first.id, now: t1))
+        assert(TaskLibrary.togglePin(&agenda, id: second.id, now: t2))
+        assert(TaskLibrary.togglePin(&agenda, id: archivedTask.id, now: t3))
+        assert(TaskLibrary.archive(&agenda, id: archivedTask.id, now: t3))
+        assert(TaskLibrary.pinnedForToday(agenda.tasks, now: t3, calendar: calendar).map(\.id) == [second.id, first.id])
+        assert(TaskLibrary.complete(&agenda, id: second.id, now: t4))
+        assert(TaskLibrary.pinnedForToday(agenda.tasks, now: t4, calendar: calendar).first?.status == .done)
+        assert(TaskLibrary.pinnedForToday(agenda.tasks, now: at(12), calendar: calendar).map(\.id) == [first.id])
+        assert(TaskLibrary.togglePin(&agenda, id: first.id, now: t5))
+        assert(TaskLibrary.pinnedForToday(agenda.tasks, now: at(12), calendar: calendar).isEmpty)
+
         // MARK: Repair pass
         var repair = HubData()
         var broken = TaskLibrary.add(&repair, title: "坏引用", now: t0)!

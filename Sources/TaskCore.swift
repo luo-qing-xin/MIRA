@@ -415,6 +415,16 @@ enum TaskLibrary {
 
     // MARK: 查询
 
+    static func pinnedForToday(_ tasks: [TaskItem], now: Date,
+                               calendar: Calendar = .current) -> [TaskItem] {
+        let today = tasks.filter { task in
+            guard task.pinned, task.archivedAt == nil else { return false }
+            if task.status != .done { return true }
+            return task.completedAt.map { calendar.isDate($0, inSameDayAs: now) } ?? false
+        }
+        return sort(today, by: .pinned)
+    }
+
     static func visible(_ data: HubData, view: TaskView, filter: TaskFilter,
                         now: Date = Date(), calendar: Calendar = .current) -> [TaskItem] {
         let query = filter.query.trimmingCharacters(in: .whitespacesAndNewlines)

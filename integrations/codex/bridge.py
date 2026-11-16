@@ -9,6 +9,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import stat
 import struct
 import sys
@@ -31,6 +32,7 @@ METHODS = {
     "item/permissions/requestApproval": "permissions",
 }
 PLAN_PREFIX = "PLEASE IMPLEMENT THIS PLAN:\n"
+ELICITATION_METHOD = "mcpServer/elicitation/request"
 
 
 def digest(value):
@@ -44,11 +46,42 @@ def turns(state):
     return state.get("turns", [])
 
 
+def request_kind(request):
+    method = request.get("method")
+    if method != ELICITATION_METHOD:
+        return METHODS.get(method)
+    params = request.get("params") or {}
+    metadata = params.get("_meta")
+    if params.get("mode") != "form" or not isinstance(metadata, dict):
+        return None
+    connector = metadata.get("connector_id")
+    if metadata.get("codex_approval_kind") != "mcp_tool_call" or not isinstance(connector, str):
+        return None
+    connector = "-".join(re.findall(r"[a-z0-9]+", connector.lower()))
+    if connector == "computer-use" or connector.startswith("computer-use-"):
+        return "computer-use"
+    return None
+
+
 def requests(state):
     # Codex tracks automatic review as a turn item. Only outstanding server
     # requests can be answered by a person.
     return [r for r in state.get("requests", [])
-            if r.get("method") in METHODS and r.get("completed") is not True]
+            if r.get("completed") is not True and request_kind(r) is not None]
+
+
+def computer_use_app(params):
+    metadata = params["_meta"]
+    display = metadata.get("tool_params_display")
+    if isinstance(display, list):
+        for item in display:
+            if isinstance(item, dict) and item.get("name") == "app":
+                value = item.get("value")
+                if isinstance(value, str) and value.strip():
+                    return " ".join(value.split())[:80]
+    arguments = metadata.get("tool_params")
+    app = arguments.get("app") if isinstance(arguments, dict) else None
+    return " ".join(app.split())[:80] if isinstance(app, str) else ""
 
 
 def details(request, state):
@@ -65,10 +98,18 @@ def details(request, state):
 
 
 def proposal(request, state, owner):
-    kind = METHODS[request["method"]]
+    kind = request_kind(request)
     params = request.get("params", {})
-    content = details(request, state)
     identity = [state["id"], request["id"], params.get("turnId"), kind]
+    if kind == "computer-use":
+        # This request stays on the native approval surface. Send only what
+        # the reminder needs, without forwarding tool parameters or metadata.
+        app = computer_use_app(params)
+        return dict(id="codex-live-" + digest(identity)[:24], session=state["id"],
+                    requestId=str(request["id"]), turnId=params.get("turnId") or "",
+                    owner=owner, kind=kind, fingerprint=digest([identity, app]),
+                    details=app, title=state.get("title") or "Codex", actions=[])
+    content = details(request, state)
     model = state.get("latestCollaborationMode") or {}
     fingerprint = digest([identity, params, content, model])
     options = params.get("availableDecisions")
@@ -288,7 +329,7 @@ class Bridge:
             state, owner = await self.ipc.snapshot(thread)
             pending = [proposal(r, state, owner) for r in requests(state)]
             for item in pending:
-                item["verified"] = item["kind"] in self.verified
+                item["verified"] = item["kind"] in METHODS.values() and item["kind"] in self.verified
                 record = self.journal.get(item["id"])
                 if record:
                     item["actions"] = []
@@ -305,7 +346,7 @@ class Bridge:
         self.busy.add(key)
         sent = False
         try:
-            if item["kind"] not in self.verified:
+            if item["kind"] not in METHODS.values() or item["kind"] not in self.verified:
                 raise ValueError("此类确认尚未完成真实回传验证")
             if key in self.journal:
                 raise ValueError("此请求已经提交，请等待状态核对")

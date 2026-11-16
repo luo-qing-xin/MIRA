@@ -181,6 +181,7 @@ class HookProcessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             for event in ['Stop', 'PermissionRequest', 'Interrupt', 'UserPromptSubmit']:
                 run = self.run_hook(dict(hook_event_name=event, session_id='abc', turn_id='t',
+                                         transcript_path='/codex/sessions/rollout.jsonl',
                                          prompt='整理记录'), tmp)
                 self.assertEqual(run.returncode, 0)
                 self.assertEqual(json.loads(run.stdout), {}, 'the hook never returns a decision')
@@ -192,6 +193,17 @@ class HookProcessTests(unittest.TestCase):
                 payload = json.loads(path.read_text(encoding='utf-8'))
                 self.assertEqual(payload['protocol'], 'mira.adapter/1')
                 self.assertEqual(payload['adapter']['version'], emitter.ADAPTER_VERSION)
+
+    def test_ephemeral_session_never_creates_a_reminder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for event in module.KINDS:
+                with self.subTest(event=event):
+                    run = self.run_hook(dict(hook_event_name=event, session_id='ephemeral',
+                                             turn_id='t', transcript_path=None,
+                                             tool_name='request_user_input', prompt='# Overview'), tmp)
+                    self.assertEqual(run.returncode, 0)
+                    self.assertEqual(json.loads(run.stdout), {})
+            self.assertFalse((Path(tmp) / 'inbox').exists())
 
     def test_execution_stop_skips_plan_check_in_the_inbox(self):
         with tempfile.TemporaryDirectory() as tmp:

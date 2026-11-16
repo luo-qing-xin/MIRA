@@ -33,6 +33,32 @@ class ProtocolTests(unittest.TestCase):
         s["requests"].append(manual)
         self.assertEqual(bridge.requests(s), [manual])
 
+    def test_only_pending_computer_use_app_requests_become_reminders(self):
+        s = state()
+        params = {
+            "mode": "form", "serverName": "computer_use", "turnId": "turn",
+            "_meta": {
+                "codex_approval_kind": "mcp_tool_call", "connector_id": "computer-use",
+                "tool_params": {"app": "com.example.app", "private_argument": "not for MIRA"},
+                "tool_params_display": [{"name": "app", "value": "MIRA Validation"}],
+                "persist": ["session", "always"],
+            },
+        }
+        pending = dict(id=116, method="mcpServer/elicitation/request", params=params)
+        other = dict(params, _meta=dict(params["_meta"], connector_id="browser-use"))
+        auth = dict(params, mode="openai/userVerification")
+        s["requests"] = [
+            pending, dict(pending, id=117, completed=True),
+            dict(pending, id=118, params=other), dict(pending, id=119, params=auth),
+        ]
+        self.assertEqual(bridge.requests(s), [pending])
+        item = bridge.proposal(pending, s, "owner")
+        self.assertEqual((item["kind"], item["details"], item["actions"]),
+                         ("computer-use", "MIRA Validation", []))
+        self.assertNotIn("not for MIRA", json.dumps(item))
+        s["requests"] = [dict(pending, completed=True)]
+        self.assertEqual(bridge.requests(s), [])
+
     def test_plan_preserves_model_and_changes_mode(self):
         s = state()
         method, params = bridge.decision_request(request(), s, "allow", "unique")

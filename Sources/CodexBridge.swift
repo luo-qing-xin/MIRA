@@ -15,6 +15,18 @@ struct CodexPending: Codable, Identifiable {
     var message: String?
 
     var label: String { kind == "plan" ? "执行计划" : "允许一次" }
+
+    var reminderBody: String {
+        switch kind {
+        case "plan":
+            return "计划已生成，确认后开始执行。"
+        case "computer-use":
+            return details.isEmpty ? "Codex 正在等待 Computer Use 授权。"
+                : "Codex 请求通过 Computer Use 使用「\(details)」。"
+        default:
+            return "请查看具体操作后选择允许或拒绝。"
+        }
+    }
 }
 
 /// The helper owns the Unix socket. Stdout is a private JSON-lines stream, and
@@ -158,6 +170,10 @@ extension Hub {
                         data.entries[index].title = title
                         entriesChanged = true
                     }
+                    if request.kind == "computer-use" && data.entries[index].body != request.reminderBody {
+                        data.entries[index].body = request.reminderBody
+                        entriesChanged = true
+                    }
                     // A native pending request remains actionable until a response
                     // has been acknowledged or the live snapshot removes it.
                     if data.entries[index].done && !codexAccepted.contains(request.id) {
@@ -172,8 +188,7 @@ extension Hub {
                             closePopup?(data.entries[index].id)
                         }
                     }
-                    let body = request.kind == "plan" ? "计划已生成，确认后开始执行。" : "请查看具体操作后选择允许或拒绝。"
-                    var entry = Entry(id: request.id, title: title, body: body,
+                    var entry = Entry(id: request.id, title: title, body: request.reminderBody,
                                       source: "Codex", status: "待确认",
                                       link: "codex://threads/" + session, date: Date(), thread: session)
                     entry.codexID = request.id
@@ -236,6 +251,15 @@ struct CodexApprovalControls: View {
     private var submitting: Bool { hub.codexSubmitting.contains(entry.id) }
 
     var body: some View {
+        if entry.codexKind == "computer-use" {
+            Button("打开原会话授权") { hub.open(entry); dismiss() }
+                .buttonStyle(EditorialButtonStyle(kind: .ink))
+        } else {
+            approvalControls
+        }
+    }
+
+    private var approvalControls: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let request {
                 DisclosureGroup(request.kind == "plan" ? "查看完整计划" : "查看具体操作", isExpanded: $expanded) {

@@ -14,8 +14,7 @@ import AppKit
 
     func show(topInset: CGFloat = 0) {
         self.topInset = max(0, topInset)
-        if let panel {
-            panel.orderFrontRegardless()
+        if panel != nil {
             scheduleResize()
             return
         }
@@ -44,10 +43,9 @@ import AppKit
         panel.contentView = content
         self.panel = panel
         resize(panel: panel, content: content)
-        panel.orderFrontRegardless()
     }
 
-    /// Keep the task card below a visible reminder card instead of covering it.
+    /// Keep the task card below the reminder stack when there is room.
     func setTopInset(_ value: CGFloat) {
         topInset = max(0, value)
         guard let panel, let content = panel.contentView else { return }
@@ -74,9 +72,13 @@ import AppKit
         panel.setContentSize(NSSize(width: width, height: height))
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
         let visible = screen.visibleFrame
-        let proposedY = visible.maxY - 20 - topInset - height
-        let y = max(visible.minY + 12, proposedY)
-        panel.setFrameOrigin(NSPoint(x: visible.maxX - width - 24, y: y))
+        let y = visible.maxY - 20 - topInset - height
+        if topInset > 0, y < visible.minY + 12 {
+            panel.orderOut(nil)
+            return
+        }
+        panel.setFrameOrigin(NSPoint(x: visible.maxX - width - 24, y: max(visible.minY + 12, y)))
+        if !panel.isVisible { panel.orderFrontRegardless() }
     }
 }
 
