@@ -173,6 +173,7 @@ struct HubView: View {
     @ObservedObject var hub: Hub
     @State var editing: Plan?
     @State var adding = false
+    @State private var agendaTask: TaskSelection?
     @State private var completedOpen = true
     @State private var recordFilter: RecordFilter = .all
     @State private var expandedRounds: Set<String> = []
@@ -201,6 +202,9 @@ struct HubView: View {
         .preferredColorScheme(.light)
         .tint(terracotta)
         .sheet(isPresented: $adding) { PlanEditor(hub: hub, plan: editing) }
+        .sheet(item: $agendaTask) { selection in
+            TaskEditor(hub: hub, taskID: selection.id)
+        }
         .sheet(isPresented: $hub.showWatchEditor) {
             WebWatchEditor(hub: hub, watchID: hub.editingWatchID)
                 .id(hub.editingWatchID ?? "new-web-watch")
@@ -547,7 +551,7 @@ struct HubView: View {
 
             dashedRule.padding(.vertical, 15)
 
-            metric("TODAY", value: "\(planDone)", unit: " / \(planTotal)", ratio: planRatio)
+            metric("TODAY", value: "\(agendaDone)", unit: " / \(agendaTotal)", ratio: agendaRatio)
             metric("回应", value: "\(pendingCount)", unit: " 件", ratio: nil)
                 .padding(.top, 14)
             if approvals > 0 {
@@ -590,7 +594,7 @@ struct HubView: View {
             HStack(alignment: .center, spacing: 8) {
                 Text("今日安排").font(editorial(15, .semibold)).tracking(1.4)
                 Spacer()
-                Text("\(planDone) / \(planTotal)")
+                Text("\(agendaDone) / \(agendaTotal)")
                     .font(numeral(9)).foregroundStyle(faint)
                     .padding(.horizontal, 6).padding(.vertical, 2)
                     .overlay(Capsule().stroke(oatmeal, lineWidth: 1))
@@ -599,7 +603,7 @@ struct HubView: View {
             ringRow.padding(.top, 10)
 
             ScrollView(showsIndicators: false) {
-                VStack(spacing: 0) { agendaRows }
+                LazyVStack(spacing: 5) { agendaRows }
                     .padding(.top, 8)
             }
             .frame(maxHeight: .infinity, alignment: .top)
@@ -614,7 +618,7 @@ struct HubView: View {
         HStack(spacing: 14) {
             ZStack {
                 Circle().stroke(oatmeal.opacity(0.55), lineWidth: 5)
-                Circle().trim(from: 0, to: max(planTotal == 0 ? 0.001 : 0.001, planRatio))
+                Circle().trim(from: 0, to: max(0.001, agendaRatio))
                     .stroke(terracotta, style: StrokeStyle(lineWidth: 5, lineCap: .round))
                     .rotationEffect(.degrees(-90))
             }
@@ -623,17 +627,17 @@ struct HubView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("节奏").font(ui(8.5, .semibold)).tracking(2).foregroundStyle(faint)
                 HStack(alignment: .firstTextBaseline, spacing: 1) {
-                    Text("\(planTotal == 0 ? 0 : Int((planRatio * 100).rounded()))").font(editorial(22))
+                    Text("\(Int((agendaRatio * 100).rounded()))").font(editorial(22))
                     Text("%").font(ui(9)).foregroundStyle(quiet)
                 }
-                Text(planTotal == 0 ? "今天还没有安排" : "已完成 \(planDone) 项安排")
+                Text(agendaTotal == 0 ? "今天还没有安排" : "已完成 \(agendaDone) 项安排")
                     .font(ui(9)).foregroundStyle(quiet)
             }
         }
     }
 
     @ViewBuilder private var agendaRows: some View {
-        if hub.todayPlans.isEmpty {
+        if agendaTotal == 0 {
             VStack(alignment: .leading, spacing: 6) {
                 Text("今天还没有安排。").font(editorial(17))
                 Text("添加一件小事，到时间 MIRA 会提醒你。")
@@ -650,8 +654,51 @@ struct HubView: View {
             .padding(.vertical, 18)
             .frame(maxWidth: .infinity, alignment: .leading)
         } else {
+            ForEach(pinnedTasks) { task in pinnedTaskRow(task) }
             ForEach(hub.todayPlans) { plan in planRow(plan) }
         }
+    }
+
+    private func pinnedTaskRow(_ task: TaskItem) -> some View {
+        let done = task.status == .done
+        return HStack(alignment: .top, spacing: 9) {
+            Button { hub.completeTask(task.id) } label: {
+                Image(systemName: done ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 15))
+                    .foregroundStyle(done ? sage : quiet)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(done)
+            .accessibilityLabel("\(done ? "已完成" : "完成任务") \(task.title)")
+            Button { agendaTask = TaskSelection(id: task.id) } label: {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(task.title)
+                        .font(editorial(13.5))
+                        .foregroundStyle(done ? faint : ink2)
+                        .strikethrough(done)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let due = task.due, !done {
+                        Text("截止 \(due.formatted(.dateTime.month().day()))")
+                            .font(ui(9)).foregroundStyle(quiet)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(task.title)
+            Image(systemName: "pin.fill")
+                .font(.system(size: 9))
+                .foregroundStyle(done ? faint : terracotta)
+                .padding(.top, 4)
+                .accessibilityHidden(true)
+        }
+        .padding(.vertical, 7)
+        .padding(.horizontal, 8)
+        .background(paper.opacity(done ? 0.45 : 0.8), in: RoundedRectangle(cornerRadius: 10))
     }
 
     @ViewBuilder private func planRow(_ plan: Plan) -> some View {
@@ -1071,12 +1118,16 @@ struct HubView: View {
             .sorted { $0.date > $1.date }
     }
 
-    private var planTotal: Int { hub.todayPlans.count }
-    private var planDone: Int {
-        hub.todayPlans.filter { hub.todayEntry($0)?.done == true }.count
+    private var pinnedTasks: [TaskItem] {
+        TaskLibrary.pinnedForToday(hub.data.tasks, now: now)
     }
-    private var planRatio: Double {
-        planTotal == 0 ? 0 : Double(planDone) / Double(planTotal)
+    private var agendaTotal: Int { hub.todayPlans.count + pinnedTasks.count }
+    private var agendaDone: Int {
+        hub.todayPlans.filter { hub.todayEntry($0)?.done == true }.count
+            + pinnedTasks.filter { $0.status == .done }.count
+    }
+    private var agendaRatio: Double {
+        agendaTotal == 0 ? 0 : Double(agendaDone) / Double(agendaTotal)
     }
 
     private var weekDates: [Date] {
@@ -1146,16 +1197,18 @@ struct EntryCard: View {
         }
         .padding(.horizontal, 17)
         .padding(.vertical, 13)
-        .background(cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
-            .stroke(highlighted ? Color.clear : oatmeal.opacity(0.7), lineWidth: 1))
-        .shadow(color: highlighted ? terracotta.opacity(0.22) : Color.black.opacity(0.035),
-                radius: highlighted ? 16 : 5, x: 0, y: highlighted ? 9 : 2)
-    }
-
-    @ViewBuilder private var cardBackground: some View {
-        if highlighted { rustGradient } else { paper }
+        .background {
+            // Shadow the rounded background without compositing the text and controls.
+            let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
+            shape.fill(highlighted ? AnyShapeStyle(rustGradient) : AnyShapeStyle(paper))
+                .shadow(color: highlighted ? terracotta.opacity(0.22) : Color.black.opacity(0.035),
+                        radius: highlighted ? 16 : 5, x: 0, y: highlighted ? 9 : 2)
+                .overlay {
+                    if !highlighted {
+                        shape.strokeBorder(oatmeal.opacity(0.7), lineWidth: 1)
+                    }
+                }
+        }
     }
 
     private var detail: String? {
@@ -1594,6 +1647,7 @@ enum RecordText {
 // MARK: - 提醒弹窗
 
 struct ReminderView: View {
+    static let width: CGFloat = 470
     @ObservedObject var hub: Hub
     let entry: Entry
     let dismiss: () -> Void
@@ -1650,7 +1704,7 @@ struct ReminderView: View {
             }
         }
         .padding(20)
-        .frame(width: 470, alignment: .leading)
+        .frame(width: Self.width, alignment: .leading)
         .background(paper)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)

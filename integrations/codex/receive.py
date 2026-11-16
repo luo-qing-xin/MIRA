@@ -122,6 +122,10 @@ def normalize(payload, now, codex_home=None):
     session = _session(payload)
     if not session:
         return None
+    # Codex sends a null transcript path for in-memory sessions. Their events
+    # have no chat history to open, including those from project suggestions.
+    if 'transcript_path' in payload and payload['transcript_path'] is None:
+        return None
 
     # Codex persists a proposed plan under the exact session and turn. Looking
     # only at this turn avoids treating an older plan as a new approval request.

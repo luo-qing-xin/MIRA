@@ -1,8 +1,11 @@
 import SwiftUI
 import AppKit
+import Darwin
 import UserNotifications
 import ServiceManagement
 
+private let miraSupportDirectory = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent("Library/Application Support/MIRA", isDirectory: true)
 private let openTasksAtLaunchKey = "openTasksAtLaunch"
 private let startupLoginHandledKey = "startupLoginHandledForTasks"
 private let autoEnabledLoginKey = "autoLoginEnabledForTasks"
@@ -118,7 +121,7 @@ let plum = Color(red: 0.431, green: 0.247, blue: 0.333) // #6E3F55
     var file: URL { root.appendingPathComponent("state.json") }
     var titlesFile: URL { root.appendingPathComponent("title-cache.json") }
     init(root storageRoot: URL? = nil) {
-        self.root = storageRoot ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/MIRA")
+        self.root = storageRoot ?? miraSupportDirectory
         encoder.dateEncodingStrategy = .secondsSince1970
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         decoder.dateDecodingStrategy = .secondsSince1970
@@ -958,25 +961,22 @@ let plum = Color(red: 0.431, green: 0.247, blue: 0.333) // #6E3F55
             closePopup?(target)
             UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [target])
         }
-        // Approvals must be actionable: show the card even when system
-        // notifications are allowed, and skip the duplicate system banner.
-        var showedApproval = false
         for entry in ready {
-            if entry.token != nil || entry.codexID != nil {
+            // Keep approvals actionable and completion cards visible together.
+            // macOS banners can group completions and cover the app's cards.
+            if entry.token != nil || entry.codexID != nil || entry.automaticallyArchived {
                 showPopup?(entry)
-                showedApproval = true
             } else {
-                notify(entry, popup: false)
+                notify(entry)
             }
-        }
-        // One popup per batch; all items remain available in the inbox.
-        if !showedApproval, notificationStatus != "已允许",
-           let entry = ready.sorted(by: { $0.status == "待确认" && $1.status != "待确认" }).first {
-            showPopup?(entry)
         }
     }
     var active: [Entry] { data.entries.filter { Schedule.needsAttention($0, now: Date()) }.sorted { a, b in a.status == "待确认" && b.status != "待确认" } }
-    func notify(_ e: Entry, popup: Bool = true) {
+    func notify(_ e: Entry) {
+        guard notificationStatus == "已允许" else {
+            showPopup?(e)
+            return
+        }
         let content = UNMutableNotificationContent()
         content.title = e.status == "待确认" ? "需要你确认 · \(e.displayTitle)" : e.displayTitle
         content.body = e.body.isEmpty ? e.status : String(e.body.prefix(160))
@@ -987,7 +987,6 @@ let plum = Color(red: 0.431, green: 0.247, blue: 0.333) // #6E3F55
             let message = failure.localizedDescription
             Task { @MainActor in self?.notificationFailed(e, message: message) }
         }
-        if popup && notificationStatus != "已允许" { showPopup?(e) }
     }
     func notificationFailed(_ entry: Entry, message: String) {
         error = "系统通知发送失败，已改用应用内提醒：\(message)"
@@ -1059,6 +1058,7 @@ let plum = Color(red: 0.431, green: 0.247, blue: 0.333) // #6E3F55
             data.entries[index] = original
             return false
         }
+        closePopup?(id)
         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [id])
         return true
     }
@@ -1209,15 +1209,50 @@ let plum = Color(red: 0.431, green: 0.247, blue: 0.333) // #6E3F55
     override var canBecomeMain: Bool { true }
 }
 
+private final class InstanceLock {
+    private let descriptor: Int32
+
+    init?() throws {
+        try FileManager.default.createDirectory(at: miraSupportDirectory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let path = miraSupportDirectory.appendingPathComponent("instance.lock").path
+        let descriptor = Darwin.open(path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        guard descriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            let failure = errno
+            Darwin.close(descriptor)
+            if failure == EWOULDBLOCK { return nil }
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(failure))
+        }
+        self.descriptor = descriptor
+    }
+
+    deinit {
+        // Keeping the file in place lets every launch lock the same inode.
+        Darwin.close(descriptor)
+    }
+}
+
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+    private var instanceLock: InstanceLock?
     var hub: Hub!
     var window: NSWindow!
     var status: NSStatusItem!
-    var popup: NSPanel?
-    var popupEntryId: String?
+    let reminders = ReminderPopups()
     var taskOverview: TaskOverviewController?
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if NSRunningApplication.runningApplications(withBundleIdentifier: "local.mira.taskhub").count > 1 { NSApp.terminate(nil); return }
+        // Claim the shared data directory before creating the hub or a status item,
+        // even when another copy has a different bundle identifier.
+        do {
+            guard let lock = try InstanceLock() else { NSApp.terminate(nil); return }
+            instanceLock = lock
+        } catch {
+            let alert = NSAlert(error: error)
+            alert.messageText = "MIRA 无法锁定本地数据目录"
+            alert.runModal()
+            NSApp.terminate(nil)
+            return
+        }
         hub = Hub()
         hub.prepareStartup()
         UNUserNotificationCenter.current().delegate = self
@@ -1232,26 +1267,25 @@ let plum = Color(red: 0.431, green: 0.247, blue: 0.333) // #6E3F55
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         status.button?.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "MIRA 任务中心")
         status.button?.target = self; status.button?.action = #selector(openTaskCenter)
-        hub.stateDidChange = { [weak self] in self?.updateStatusItem() }
-        hub.showMain = { [weak self] in self?.showWindow() }
-        hub.showPopup = { [weak self] entry in self?.showPopup(entry) }
-        hub.closePopup = { [weak self] id in
-            guard let self, self.popupEntryId == id else { return }
-            self.popup?.close()
-            self.popup = nil
-            self.popupEntryId = nil
-            self.taskOverview?.setTopInset(0)
+        hub.stateDidChange = { [weak self] in
+            self?.reminders.removeExpired(now: Date())
+            self?.updateStatusItem()
         }
+        hub.showMain = { [weak self] in self?.showWindow() }
+        hub.showPopup = { [weak self] entry in
+            guard let self else { return }
+            self.reminders.show(entry, hub: self.hub)
+        }
+        hub.closePopup = { [weak self] id in self?.reminders.close(id) }
         taskOverview = TaskOverviewController(hub: hub)
+        reminders.insetChanged = { [weak self] inset in self?.taskOverview?.setTopInset(inset) }
         hub.showTaskOverview = { [weak self] in
             guard let self else { return }
-            let inset = self.popup.map { $0.frame.height + 12 } ?? 0
-            self.taskOverview?.show(topInset: inset)
+            self.taskOverview?.show(topInset: self.reminders.topInset)
         }
         hub.start()
         if hub.openTasksAtLaunch {
-            let inset = popup.map { $0.frame.height + 12 } ?? 0
-            taskOverview?.show(topInset: inset)
+            taskOverview?.show(topInset: reminders.topInset)
         } else {
             showWindow()
         }
@@ -1289,28 +1323,14 @@ let plum = Color(red: 0.431, green: 0.247, blue: 0.333) // #6E3F55
         status.button?.toolTip = description
         status.button?.setAccessibilityLabel(description)
     }
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showWindow(); return true }
-    func applicationWillTerminate(_ notification: Notification) { hub.codexBridge.stop() }
-    func showPopup(_ entry: Entry) {
-        popup?.close()
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 470, height: 230), styleMask: [.nonactivatingPanel, .borderless], backing: .buffered, defer: false)
-        panel.title = "MIRA · \(entry.status)"; panel.level = .floating
-        panel.isFloatingPanel = true; panel.hidesOnDeactivate = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.isReleasedWhenClosed = false; panel.isOpaque = false
-        panel.backgroundColor = .clear; panel.hasShadow = true
-        let content = NSHostingView(rootView: ReminderView(hub: hub, entry: entry, dismiss: { [weak self, weak panel] in
-            panel?.close()
-            self?.popup = nil
-            self?.popupEntryId = nil
-            self?.taskOverview?.setTopInset(0)
-        }))
-        panel.contentView = content
-        let size = content.fittingSize
-        panel.setContentSize(NSSize(width: 470, height: entry.codexID == nil ? max(190, size.height) : max(510, size.height)))
-        if let frame = NSScreen.main?.visibleFrame { panel.setFrameOrigin(NSPoint(x: frame.maxX - 494, y: frame.maxY - panel.frame.height - 20)) }
-        popup = panel; popupEntryId = entry.id; panel.orderFrontRegardless()
-        taskOverview?.setTopInset(panel.frame.height + 12)
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard window != nil else { return false }
+        showWindow()
+        return true
+    }
+    func applicationWillTerminate(_ notification: Notification) { hub?.codexBridge.stop() }
+    func applicationDidChangeScreenParameters(_ notification: Notification) {
+        reminders.layout()
     }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completion: @escaping (UNNotificationPresentationOptions) -> Void) { completion([.banner, .sound]) }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completion: @escaping () -> Void) {
